@@ -16,7 +16,8 @@ Before changing anything:
 
 * The robot must be in API mode (TCP/IP secondary development). It is a
   one-time switch per robot; the lab robots have it on. If not,
-  `docs/api-mode-utm.md` is the one-time procedure from a Mac.
+  `docs/dobot-api-mode.md` is the one-time procedure from a Mac,
+  `docs/dobot-api-mode-windows.md` from a Windows PC with a wired port.
 * Only one program may send motion commands at a time.
 * Pump DO indices (`SUCK_DO_INDEX`, `BLOW_DO_INDEX`) are a guess at the pump box
   wiring. Check them against the box before trusting a pick.

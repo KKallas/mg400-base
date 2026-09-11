@@ -60,8 +60,9 @@ Ports the robot now serves:
 | 30004 | feedback | 1440-byte status packet every ~8 ms: mode, joints, tool pose, DO bits |
 
 If `mg400 status` is refused while the ping works, API mode is off. Switching it
-on is done once with Dobot Studio Pro; on a Mac that runs in a UTM Windows VM —
-steps in [docs/api-mode-utm.md](docs/api-mode-utm.md). Nothing else in this
+on is done once with Dobot Studio Pro. On a Windows PC with a wired port:
+[docs/dobot-api-mode-windows.md](docs/dobot-api-mode-windows.md). On a Mac it runs in a UTM Windows VM —
+steps in [docs/dobot-api-mode.md](docs/dobot-api-mode.md). Nothing else in this
 package needs Studio Pro, and **only one program may send motion commands at a
 time**, so it is not running while the page is.
 
@@ -162,7 +163,7 @@ Error** re-arms it.
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
 | no ping to 192.168.1.6 | address, mask, cable, or the wrong robot port | redo step 1; cable in LAN1 |
-| ping works, `mg400 status` refuses | API mode not enabled | docs/api-mode-utm.md |
+| ping works, `mg400 status` refuses | API mode not enabled | docs/dobot-api-mode-windows.md or docs/dobot-api-mode.md |
 | connects but will not move | not enabled, or another program holds control | **Enable**; stop the other program |
 | connects, then drops | two controllers at once, or robot in error | one controller; **Clear Error → Enable** |
 | macOS asks about incoming connections | firewall prompt for python | allow it |
