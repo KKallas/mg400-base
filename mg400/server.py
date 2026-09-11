@@ -17,7 +17,6 @@ reach and start at a low speed.
 
 import argparse
 import json
-import math
 import os
 import threading
 
@@ -25,6 +24,7 @@ from flask import Flask, jsonify, request, send_from_directory
 
 from . import live
 from .driver import DobotMG400, DobotError
+from .limits import DEFAULT_Z_FLOOR, RADIUS_MAX, RADIUS_MIN, WORKSPACE, clamp_pose
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(HERE, "static")
@@ -32,26 +32,17 @@ STATIC = os.path.join(HERE, "static")
 # ---- configuration --------------------------------------------------------
 DEFAULT_IP = os.environ.get("MG400_IP", "192.168.1.6")
 
-# Approximate MG400 workspace. The arm's reachable area is an ANNULUS (a ring),
-# not a box, so X/Y are additionally clamped to a min/max radius from the base
-# axis. These are conservative starting values — the controller enforces the true
-# workspace and rejects anything unreachable (surfaced as a ServoP error). Verify
-# and tighten on your hardware.
-WORKSPACE = {
-    "x": [-450.0, 450.0],
-    "y": [-450.0, 450.0],
-    "z": [-150.0, 230.0],
-    "r": [-160.0, 160.0],
-}
-RADIUS_MIN = 150.0   # mm — inside this the arm can't reach (too folded)
-RADIUS_MAX = 440.0   # mm — max horizontal reach
+# Workspace limits and the clamp live in limits.py (shared with the CLI). The Z
+# floor is the lowest Z any target may have; set it for your table with
+# --z-floor or MG400_Z_FLOOR.
+Z_FLOOR = float(os.environ.get("MG400_Z_FLOOR", DEFAULT_Z_FLOOR))
 
 # Following speed at 100% on the speed slider.
 MAX_LIN_VEL = 200.0  # mm/s
 MAX_ANG_VEL = 90.0   # deg/s
 # Follower easing: time to ramp from rest to the speed cap (and to brake to a
 # stop). Larger ramp = gentler start/stop and a longer braking distance.
-RAMP_SECS = 0.35
+RAMP_SECS = 0.50
 
 # Air pump box on two DO lines: at most one energised, both low = off.
 # Verify these against the pump box manual before the first Enable.
@@ -70,7 +61,7 @@ _live = live.LiveState()
 
 # Motion shaping: last speed % and ramp time, pushed to the follower together as
 # velocity + acceleration caps.
-_speed_ratio = 30
+_speed_ratio = 10     # % of MAX_LIN_VEL / MAX_ANG_VEL → 20 mm/s, 9 deg/s
 _ramp_secs = RAMP_SECS
 
 
@@ -126,11 +117,14 @@ def _save_locations():
         pass
 
 
-def configure(locations_path=None):
-    """Set the locations file and load it. Called by main() before serving."""
-    global LOCATIONS_PATH
+def configure(locations_path=None, z_floor=None):
+    """Set the locations file and Z floor, load the locations. Called by run()
+    before serving."""
+    global LOCATIONS_PATH, Z_FLOOR
     if locations_path:
         LOCATIONS_PATH = os.path.abspath(locations_path)
+    if z_floor is not None:
+        Z_FLOOR = float(z_floor)
     _load_locations()
 
 
@@ -143,22 +137,8 @@ def _clamp(v, lo, hi):
 
 
 def _clamp_pose(x, y, z, r):
-    """Clamp a target pose into the (approximate) reachable workspace: Z and R to
-    their ranges, and X/Y to the reachable annulus, then to the X/Y box."""
-    z = _clamp(z, *WORKSPACE["z"])
-    r = _clamp(r, *WORKSPACE["r"])
-    radius = math.hypot(x, y)
-    if radius == 0.0:
-        x, y = RADIUS_MIN, 0.0  # base axis is unreachable; nudge outward
-    elif radius > RADIUS_MAX:
-        s = RADIUS_MAX / radius
-        x, y = x * s, y * s
-    elif radius < RADIUS_MIN:
-        s = RADIUS_MIN / radius
-        x, y = x * s, y * s
-    x = _clamp(x, *WORKSPACE["x"])
-    y = _clamp(y, *WORKSPACE["y"])
-    return x, y, z, r
+    """Clamp a target into the reachable workspace and above the Z floor."""
+    return clamp_pose(x, y, z, r, Z_FLOOR)
 
 
 # ---- programmatic API (import mg400.server from your own code) -------------
@@ -225,10 +205,17 @@ def _fail(error, **kw):
     return jsonify({"ok": False, "error": error, **kw})
 
 
+def _not_connected(robot):
+    """The failure reply for a command with no working link, saying why the
+    link was dropped if it was."""
+    err = robot.get_state().get("link_error") if robot is not None else None
+    return _fail(f"Connection lost ({err}). Press Connect." if err else "Not connected")
+
+
 def _command(fn):
     robot = _current()
     if robot is None or not robot.is_connected():
-        return _fail("Not connected")
+        return _not_connected(robot)
     try:
         errid, resp = fn(robot)
         return jsonify({"ok": errid == 0, "errid": errid, "resp": resp})
@@ -250,6 +237,7 @@ def config():
         "workspace": WORKSPACE,
         "radius_min": RADIUS_MIN,
         "radius_max": RADIUS_MAX,
+        "z_floor": Z_FLOOR,
         "default_ip": DEFAULT_IP,
         "suck_do": SUCK_DO_INDEX,
         "blow_do": BLOW_DO_INDEX,
@@ -324,7 +312,7 @@ def disconnect():
 def enable():
     robot = _current()
     if robot is None or not robot.is_connected():
-        return _fail("Not connected")
+        return _not_connected(robot)
     try:
         robot.clear_error()
     except DobotError:
@@ -343,7 +331,7 @@ def enable():
 def disable():
     robot = _current()
     if robot is None or not robot.is_connected():
-        return _fail("Not connected")
+        return _not_connected(robot)
     robot.stop_servo()
     return _command(lambda r: r.disable())
 
@@ -358,7 +346,7 @@ def speed():
     global _speed_ratio
     robot = _current()
     if robot is None or not robot.is_connected():
-        return _fail("Not connected")
+        return _not_connected(robot)
     ratio = _clamp(int((request.json or {}).get("ratio", 30)), 1, 100)
     _speed_ratio = ratio
     _apply_motion(robot)
@@ -372,7 +360,7 @@ def smoothness():
     global _ramp_secs
     robot = _current()
     if robot is None or not robot.is_connected():
-        return _fail("Not connected")
+        return _not_connected(robot)
     try:
         secs = float((request.json or {}).get("secs", RAMP_SECS))
     except (TypeError, ValueError):
@@ -386,7 +374,7 @@ def smoothness():
 def stop():
     robot = _current()
     if robot is None or not robot.is_connected():
-        return _fail("Not connected")
+        return _not_connected(robot)
     robot.hold()
     return _ok()
 
@@ -418,7 +406,7 @@ def move():
     follower streams ServoP toward it at the velocity cap."""
     robot = _current()
     if robot is None or not robot.is_connected():
-        return _fail("Not connected")
+        return _not_connected(robot)
     data = request.json or {}
     try:
         x = float(data["x"])
@@ -485,7 +473,7 @@ def recall_location(n):
     empty or the robot isn't connected."""
     robot = _current()
     if robot is None or not robot.is_connected():
-        return _fail("Not connected")
+        return _not_connected(robot)
     if not (1 <= n <= NUM_SLOTS):
         return _fail("slot out of range")
     with _loc_lock:
@@ -499,10 +487,11 @@ def recall_location(n):
 
 
 # ---- entry point ----------------------------------------------------------
-def run(host="0.0.0.0", port=8000, locations=None):
-    configure(locations)
+def run(host="0.0.0.0", port=8000, locations=None, z_floor=None):
+    configure(locations, z_floor)
     print(f"MG400 base station on http://{host}:{port}/  "
-          f"(robot default {DEFAULT_IP}, locations {LOCATIONS_PATH})")
+          f"(robot default {DEFAULT_IP}, Z floor {Z_FLOOR:g} mm, "
+          f"locations {LOCATIONS_PATH})")
     # threaded so the SSE stream does not block the command routes
     app.run(host=host, port=port, threaded=True, debug=False)
     return 0
@@ -514,8 +503,10 @@ def main(argv=None):
     p.add_argument("--port", type=int, default=8000)
     p.add_argument("--locations", default=None,
                    help="saved-locations JSON file (default: ./locations.json)")
+    p.add_argument("--z-floor", type=float, default=None,
+                   help=f"lowest target Z in mm (default: MG400_Z_FLOOR or {DEFAULT_Z_FLOOR:g})")
     args = p.parse_args(argv)
-    return run(args.host, args.port, args.locations)
+    return run(args.host, args.port, args.locations, args.z_floor)
 
 
 if __name__ == "__main__":

@@ -4,14 +4,15 @@ mg400 — command line for the base station.
     mg400 status                    robot mode, pose, DO bits
     mg400 enable | disable | clear  dashboard commands
     mg400 pose                      current tool pose X Y Z R
-    mg400 move X Y Z [R]            MovL to a pose, waits until it arrives
+    mg400 move X Y Z [R]            MovL to a pose (not below the Z floor), waits
     mg400 pump suck|blow|off        the pump box on its two DO lines
     mg400 do INDEX 0|1              one digital output
     mg400 speed N                   SpeedFactor 1–100
     mg400 serve [--port 8000]       the control page + HTTP API
 
 The robot IP comes from --ip, else the MG400_IP environment variable, else
-192.168.1.6 (Dobot factory default on LAN1).
+192.168.1.6 (Dobot factory default on LAN1). The Z floor comes from --z-floor,
+else MG400_Z_FLOOR, else -72 mm; both options go before the command.
 """
 
 import argparse
@@ -19,7 +20,8 @@ import os
 import sys
 import time
 
-from .driver import DobotMG400, DobotError
+from .driver import DobotMG400, DobotError, classify_alarm_ids
+from .limits import DEFAULT_Z_FLOOR
 
 DEFAULT_IP = os.environ.get("MG400_IP", "192.168.1.6")
 
@@ -47,7 +49,8 @@ def cmd_status(robot, args):
     print(f"joints  {st['joints']}")
     print(f"DO bits {st['digital_out']:08b}   DI bits {st['digital_in']:08b}")
     if st["error"]:
-        print(f"errors  {robot.get_error_id()}")
+        ids = robot.get_error_id()
+        print(f"errors  {ids} · {classify_alarm_ids(ids)[1]}")
     return 0
 
 
@@ -79,6 +82,10 @@ def cmd_pose(robot, args):
 
 
 def cmd_move(robot, args):
+    if args.z < args.z_floor:
+        print(f"Z {args.z:g} is below the Z floor {args.z_floor:g} mm "
+              "(set --z-floor before the command to change it)", file=sys.stderr)
+        return 1
     st = robot.get_state()
     if not st["enabled"]:
         print("robot is not enabled — run `mg400 enable` first", file=sys.stderr)
@@ -124,6 +131,9 @@ def main(argv=None):
     p = argparse.ArgumentParser(prog="mg400", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--ip", default=DEFAULT_IP, help=f"robot address (default {DEFAULT_IP})")
+    z_floor = float(os.environ.get("MG400_Z_FLOOR", DEFAULT_Z_FLOOR))
+    p.add_argument("--z-floor", type=float, default=z_floor,
+                   help=f"lowest Z in mm that move and the page may target (default {z_floor:g})")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("status").set_defaults(fn=cmd_status)
@@ -168,7 +178,7 @@ def main(argv=None):
     if args.cmd == "serve":
         from . import server
         server.DEFAULT_IP = args.ip
-        return server.run(args.host, args.port, args.locations)
+        return server.run(args.host, args.port, args.locations, args.z_floor)
 
     try:
         robot = _connect(args.ip)

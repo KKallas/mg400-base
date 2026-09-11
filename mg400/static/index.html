@@ -117,6 +117,7 @@
     </div>
     <div class="hint" id="connHint">Robot must be in API mode — see README.md.
       Connect opens control 29999 · motion 30003 · feedback 30004.</div>
+    <div class="hint" id="linkErr" style="color:var(--err)" hidden></div>
   </section>
 
   <section class="panel">
@@ -135,20 +136,21 @@
       <div class="stat"><div class="k">Robot mode</div><div class="v" id="sMode">—</div></div>
       <div class="stat"><div class="k">Servos</div><div class="v" id="sEnabled">—</div></div>
       <div class="stat"><div class="k">Errors</div><div class="v" id="sError">—</div></div>
+      <div class="stat"><div class="k">Follower</div><div class="v" id="sFollow">—</div></div>
     </div>
   </section>
 
   <section class="panel">
     <h2>Following speed</h2>
     <div class="axis">
-      <div class="label"><span class="name">Speed</span><span class="val" id="speedVal">30%</span></div>
-      <input type="range" id="speed" min="1" max="100" value="30" disabled />
+      <div class="label"><span class="name">Speed</span><span class="val" id="speedVal">10%</span></div>
+      <input type="range" id="speed" min="1" max="100" value="10" disabled />
       <div class="hint">Caps linear (mm/s) and rotational (deg/s) following speed.
         Start low for first Cartesian tests.</div>
     </div>
     <div class="axis">
-      <div class="label"><span class="name">Smoothness (ramp)</span><span class="val" id="smoothVal">0.35 s</span></div>
-      <input type="range" id="smooth" min="0.05" max="0.8" step="0.05" value="0.35" disabled />
+      <div class="label"><span class="name">Smoothness (ramp)</span><span class="val" id="smoothVal">0.50 s</span></div>
+      <input type="range" id="smooth" min="0.05" max="0.8" step="0.05" value="0.5" disabled />
       <div class="hint">Ramp-up / braking time. Higher = gentler start &amp; stop, no
         overshoot; lower = snappier.</div>
     </div>
@@ -162,7 +164,8 @@
       <span class="hint" id="wsHint"></span>
     </div>
     <div class="hint">Targets are clamped to the reachable workspace (Z/R range
-      and an X/Y radius ring). The controller rejects anything still
+      and an X/Y radius ring) and never go below the Z floor. X/Y/Z move
+      together in a straight line. The controller rejects anything still
       unreachable — shown in the log.</div>
   </section>
 
@@ -199,11 +202,11 @@ const AXIS_DEFS = [
   { id:"r", name:"R — tool rotation", unit:"°", step:0.5 },
 ];
 let ws = { x:[-450,450], y:[-450,450], z:[-150,230], r:[-160,160] };
-let radiusMin = 150, radiusMax = 440;
+let radiusMin = 150, radiusMax = 440, zFloor = null;
 let connected = false;
 let sliderEls = {};
 const numEls = {};   // per-axis type-in number boxes, kept in sync with the sliders
-let lastServoError = null, pumpMode = "off";
+let lastServoError = null, lastLinkError = null, wasStalled = false, pumpMode = "off";
 // id of the slider being dragged in THIS window (or null); cross-window sync
 // follows the server target but never clobbers the slider you're holding.
 let draggingId = null;
@@ -283,7 +286,8 @@ function buildAxes() {
     });
   });
   document.getElementById("wsHint").textContent =
-    `Reach ring ${radiusMin}–${radiusMax} mm; Z ${ws.z[0]}–${ws.z[1]} mm (approx).`;
+    `Reach ring ${radiusMin}–${radiusMax} mm; Z ${ws.z[0]}–${ws.z[1]} mm (approx)` +
+    (zFloor === null ? "." : `; Z floor ${zFloor} mm.`);
 }
 
 let lastSent = 0, pending = null, timer = null;
@@ -317,9 +321,17 @@ function setControlsEnabled(on) {
 
 async function poll() { applyStatus(await api("/api/status")); }   // one-shot pull
 function applyStatus(s) {
+  // A dropped link keeps its robot object, so the server can say why it dropped.
+  const lost = !s.connected && !!s.link_error;
   const connPill = document.getElementById("connPill");
-  connPill.className = "pill " + (s.connected ? "on" : "off");
-  document.getElementById("connText").textContent = s.connected ? "Connected" : "Disconnected";
+  connPill.className = "pill " + (s.connected ? "on" : (lost ? "error" : "off"));
+  document.getElementById("connText").textContent =
+    s.connected ? "Connected" : (lost ? "Connection lost" : "Disconnected");
+  const linkErr = document.getElementById("linkErr");
+  linkErr.hidden = !lost;
+  if (lost) linkErr.textContent = `Connection lost: ${s.link_error}. Press Connect to reconnect.`;
+  if (lost && s.link_error !== lastLinkError) log(`Connection lost: ${s.link_error}`, "log-err");
+  lastLinkError = lost ? s.link_error : null;
 
   document.getElementById("modeText").textContent = s.mode_name || "—";
   document.getElementById("modePill").className =
@@ -330,12 +342,20 @@ function applyStatus(s) {
   document.getElementById("sMode").textContent = (s.robot_mode ?? "—") + " · " + (s.mode_name || "");
   document.getElementById("sEnabled").textContent = s.enabled ? "ON" : "off";
   document.getElementById("sEnabled").style.color = s.enabled ? "var(--ok)" : "var(--muted)";
-  document.getElementById("sError").textContent = s.error ? "ERROR" : "none";
+  document.getElementById("sError").textContent = s.error ? (s.fault_label || "ERROR") : "none";
   document.getElementById("sError").style.color = s.error ? "var(--err)" : "var(--muted)";
 
   if (s.servo_error && s.servo_error !== lastServoError)
     log("Servo follower stopped: " + s.servo_error, "log-err");
   lastServoError = s.servo_error || null;
+
+  const follow = document.getElementById("sFollow");
+  follow.textContent = s.stalled ? "STALLED" : (s.servo_active ? "running" : "stopped");
+  follow.style.color = s.stalled ? "var(--err)" : (s.servo_active ? "var(--ok)" : "var(--muted)");
+  if (s.stalled && !wasStalled)
+    log(`Arm is not following: ${s.stall_error} mm from its setpoint and not moving. ` +
+        "Check the E-stop and the unlock button, then Clear Error.", "log-err");
+  wasStalled = !!s.stalled;
 
   pumpMode = s.pump_mode || "off";
   document.getElementById("btnSuck").className = pumpMode === "suck" ? "ok" : "";
@@ -372,6 +392,11 @@ function applyStatus(s) {
   if (smoothEl !== document.activeElement && typeof s.ramp_secs === "number") {
     smoothEl.value = s.ramp_secs;
     document.getElementById("smoothVal").textContent = s.ramp_secs.toFixed(2) + " s";
+  }
+  const speedEl = document.getElementById("speed");
+  if (speedEl !== document.activeElement && typeof s.speed_ratio === "number") {
+    speedEl.value = s.speed_ratio;
+    document.getElementById("speedVal").textContent = s.speed_ratio + "%";
   }
 
   applySlots(s.slots || []);
@@ -463,6 +488,7 @@ function wire() {
   document.getElementById("btnDisconnect").onclick = async () =>
     report("disconnect", await api("/api/disconnect", {}));
   document.getElementById("btnEnable").onclick = async () => {
+    log("Enabling … waits until the arm reports enabled");
     const res = report("enable", await api("/api/enable", {}));
     if (res.ok) setTimeout(syncSliders, 300);  // align sliders to start pose
   };
@@ -512,6 +538,10 @@ async function init() {
   if (cfg.workspace) ws = cfg.workspace;
   if (cfg.radius_min) radiusMin = cfg.radius_min;
   if (cfg.radius_max) radiusMax = cfg.radius_max;
+  if (typeof cfg.z_floor === "number") {
+    zFloor = cfg.z_floor;
+    ws.z = [Math.min(Math.max(ws.z[0], zFloor), ws.z[1]), ws.z[1]];   // slider stops at the floor
+  }
   if (cfg.default_ip) document.getElementById("ip").value = cfg.default_ip;
   buildAxes();
   buildSlots();
