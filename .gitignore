@@ -1,0 +1,5 @@
+# runtime-persisted state (written by the server)
+locations.json
+__pycache__/
+*.egg-info/
+.venv/

@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MG400 base station</title>
+<style>
+  :root {
+    --bg:#0f1115; --panel:#1a1d24; --line:#2a2f3a; --txt:#e6e9ef; --muted:#8a93a6;
+    --accent:#4f9dff; --ok:#36c46b; --warn:#f5a623; --err:#ff5462;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    background:var(--bg); color:var(--txt); line-height:1.4; }
+  header { padding:14px 20px; border-bottom:1px solid var(--line);
+    display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; font-weight:600; }
+  header .sub { color:var(--muted); font-size:12px; }
+  main { max-width:880px; margin:0 auto; padding:20px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:16px 18px; margin-bottom:16px; }
+  .panel h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em;
+    color:var(--muted); margin:0 0 12px; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  input[type=text] { background:#0c0e12; border:1px solid var(--line); color:var(--txt);
+    padding:8px 10px; border-radius:6px; font:inherit; width:150px; }
+  button { background:#232733; border:1px solid var(--line); color:var(--txt);
+    padding:8px 14px; border-radius:6px; font:inherit; cursor:pointer; }
+  button:hover:not(:disabled) { border-color:var(--accent); }
+  button:disabled {
+    background:#171b22; border-color:#303642; color:#8f98aa;
+    cursor:not-allowed; opacity:1;
+  }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.ok { background:var(--ok); border-color:var(--ok); color:#7a0b00; font-weight:700; }
+  button.stop { background:var(--warn); border-color:var(--warn); color:#2a1c00; font-weight:600; }
+  button.primary:disabled, button.ok:disabled, button.stop:disabled {
+    background:#171b22; border-color:#303642; color:#8f98aa;
+  }
+  .pill { display:inline-flex; align-items:center; gap:6px; padding:4px 10px;
+    border-radius:999px; font-size:12px; font-weight:600; background:#232733; color:var(--muted); }
+  .pill .dot { width:8px; height:8px; border-radius:50%; background:var(--muted); }
+  .pill.on { color:var(--ok); } .pill.on .dot { background:var(--ok); }
+  .pill.off { color:var(--muted); }
+  .pill.error { color:var(--err); } .pill.error .dot { background:var(--err); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; }
+  .stat { background:#13161c; border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+  .stat .k { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
+  .stat .v { font-size:20px; font-variant-numeric:tabular-nums; margin-top:2px; }
+  .axis { margin:18px 0; }
+  .axis .label { display:flex; justify-content:space-between; margin-bottom:6px; }
+  .axis .name { font-weight:600; }
+  .axis .val { font-variant-numeric:tabular-nums; color:var(--accent); }
+  .axis .actual { color:var(--muted); font-size:12px; }
+  .axis .readout { display:inline-flex; align-items:center; }
+  .valnum { width:74px; background:#0c0e12; border:1px solid var(--line); color:var(--accent);
+    border-radius:4px; padding:2px 6px; font:inherit; font-size:13px; text-align:right;
+    font-variant-numeric:tabular-nums; -moz-appearance:textfield; }
+  .valnum:focus { outline:none; border-color:var(--accent); }
+  .valnum:disabled { opacity:.5; }
+  .axis .unit { color:var(--muted); font-size:12px; margin:0 8px 0 5px; }
+  input[type=range] { width:100%; accent-color:var(--accent); height:26px; }
+  .limits { display:flex; justify-content:space-between; font-size:11px; color:var(--muted); }
+  .estop-bar { display:flex; gap:12px; align-items:center; }
+  .loclist { display:flex; flex-direction:column; gap:6px; margin:4px 0; }
+  .locrow { display:flex; align-items:center; gap:8px; flex-wrap:wrap; background:#13161c;
+    border:1px solid var(--line); border-radius:8px; padding:7px 10px; }
+  .locrow.empty { opacity:.6; }
+  .locnum { color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; width:26px; }
+  .locrow .locname { flex:1; min-width:90px; background:#0c0e12; border:1px solid var(--line);
+    color:var(--txt); border-radius:4px; padding:4px 8px; font:inherit; font-size:13px; }
+  .locrow .locname:focus { outline:none; border-color:var(--accent); }
+  .loccoords { display:inline-flex; align-items:center; gap:3px; color:var(--muted); font-size:11px; }
+  .loccoord { width:54px; background:#0c0e12; border:1px solid var(--line); color:var(--accent);
+    border-radius:4px; padding:3px 5px; font:inherit; font-size:12px; text-align:right;
+    font-variant-numeric:tabular-nums; -moz-appearance:textfield; margin-right:6px; }
+  .loccoord:focus { outline:none; border-color:var(--accent); }
+  .locrow button { padding:5px 10px; font-size:12px; }
+  .locrow button.locrecall { background:var(--ok); border-color:var(--ok); color:#7a0b00; font-weight:700; }
+  .locrow button.locrecall:disabled { background:#171b22; border-color:#303642; color:#8f98aa; }
+  .locrow button.del { background:#2a1216; border-color:#5a2630; color:#ff8a96; padding:4px 9px; }
+  .locrow button.del:hover { border-color:var(--err); }
+  #log { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px;
+    background:#0c0e12; border:1px solid var(--line); border-radius:8px;
+    padding:10px; height:130px; overflow-y:auto; white-space:pre-wrap; }
+  .log-err{color:var(--err);} .log-ok{color:var(--ok);} .log-info{color:var(--muted);}
+  .hint { color:var(--muted); font-size:12px; margin-top:8px; }
+  select { background:#0c0e12; border:1px solid var(--line); color:var(--txt);
+    padding:8px 10px; border-radius:6px; font:inherit; }
+  .seg { display:inline-flex; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+  .seg button { border:none; border-radius:0; padding:8px 14px; background:#13161c; color:#c6ccd8; }
+  .seg button.active { background:var(--accent); color:#fff; }
+  .seg button:not(:last-child) { border-right:1px solid var(--line); }
+</style>
+</head>
+<body>
+<header>
+  <h1>MG400 base station</h1>
+  <span class="sub">sliders · saved locations · pump</span>
+  <span style="flex:1"></span>
+  <span id="connPill" class="pill off"><span class="dot"></span><span id="connText">Disconnected</span></span>
+  <span id="modePill" class="pill off"><span class="dot"></span><span id="modeText">—</span></span>
+</header>
+
+<main>
+  <section class="panel">
+    <h2>Connection</h2>
+    <div class="row">
+      <span class="hint" style="margin:0">Robot IP</span>
+      <input type="text" id="ip" value="192.168.1.6" />
+      <button id="btnConnect" class="primary">Connect</button>
+      <button id="btnDisconnect" disabled>Disconnect</button>
+      <span style="flex:1"></span>
+      <button id="btnEnable" class="ok" disabled>Enable</button>
+      <button id="btnDisable" disabled>Disable</button>
+      <button id="btnClear" disabled>Clear Error</button>
+    </div>
+    <div class="hint" id="connHint">Robot must be in API mode — see README.md.
+      Connect opens control 29999 · motion 30003 · feedback 30004.</div>
+  </section>
+
+  <section class="panel">
+    <h2>Stop</h2>
+    <div class="estop-bar">
+      <button id="btnStop" class="stop" disabled>Stop motion</button>
+      <span class="hint">“Stop motion” freezes the pose. For a hard stop, use the
+        robot's mechanical E-stop button.</span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Live status</h2>
+    <div class="grid">
+      <div class="stat"><div class="k">Feedback</div><div class="v" id="sFeed">—</div></div>
+      <div class="stat"><div class="k">Robot mode</div><div class="v" id="sMode">—</div></div>
+      <div class="stat"><div class="k">Servos</div><div class="v" id="sEnabled">—</div></div>
+      <div class="stat"><div class="k">Errors</div><div class="v" id="sError">—</div></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Following speed</h2>
+    <div class="axis">
+      <div class="label"><span class="name">Speed</span><span class="val" id="speedVal">30%</span></div>
+      <input type="range" id="speed" min="1" max="100" value="30" disabled />
+      <div class="hint">Caps linear (mm/s) and rotational (deg/s) following speed.
+        Start low for first Cartesian tests.</div>
+    </div>
+    <div class="axis">
+      <div class="label"><span class="name">Smoothness (ramp)</span><span class="val" id="smoothVal">0.35 s</span></div>
+      <input type="range" id="smooth" min="0.05" max="0.8" step="0.05" value="0.35" disabled />
+      <div class="hint">Ramp-up / braking time. Higher = gentler start &amp; stop, no
+        overshoot; lower = snappier.</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>TCP pose — X / Y / Z (mm) &amp; R (deg)</h2>
+    <div id="axes"></div>
+    <div class="row" style="margin-top:10px">
+      <button id="btnSync" disabled>Sync sliders to robot</button>
+      <span class="hint" id="wsHint"></span>
+    </div>
+    <div class="hint">Targets are clamped to the reachable workspace (Z/R range
+      and an X/Y radius ring). The controller rejects anything still
+      unreachable — shown in the log.</div>
+  </section>
+
+  <section class="panel">
+    <h2>Saved locations</h2>
+    <div class="hint" style="margin-bottom:10px">Ten fixed slots — always callable as
+      <code>POST api/recall/&lt;1–10&gt;</code>, even when empty. Edit the label and
+      X/Y/Z/R, or <b>Set</b> to capture the current slider pose; <b>Recall</b> sends
+      the arm there (needs Connect → Enable). Saved across restarts.</div>
+    <div id="locList" class="loclist"></div>
+  </section>
+
+  <section class="panel">
+    <h2>End tool — air pump</h2>
+    <div class="row">
+      <button id="btnSuck" disabled>⭳ Vacuum (pull)</button>
+      <button id="btnBlow" disabled>⭱ Blow (push)</button>
+      <button id="btnPumpOff" disabled>Off</button>
+      <span id="pumpPill" class="pill off"><span class="dot"></span><span id="pumpText">off</span></span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Command log</h2>
+    <div id="log"></div>
+  </section>
+</main>
+
+<script>
+const AXIS_DEFS = [
+  { id:"x", name:"X — forward / back", unit:"mm", step:1 },
+  { id:"y", name:"Y — left / right", unit:"mm", step:1 },
+  { id:"z", name:"Z — up / down", unit:"mm", step:1 },
+  { id:"r", name:"R — tool rotation", unit:"°", step:0.5 },
+];
+let ws = { x:[-450,450], y:[-450,450], z:[-150,230], r:[-160,160] };
+let radiusMin = 150, radiusMax = 440;
+let connected = false;
+let sliderEls = {};
+const numEls = {};   // per-axis type-in number boxes, kept in sync with the sliders
+let lastServoError = null, pumpMode = "off";
+// id of the slider being dragged in THIS window (or null); cross-window sync
+// follows the server target but never clobbers the slider you're holding.
+let draggingId = null;
+window.addEventListener("pointerup", () => draggingId = null);
+window.addEventListener("keyup", () => draggingId = null);
+
+function log(msg, cls="log-info") {
+  const el = document.getElementById("log");
+  const line = document.createElement("div");
+  line.className = cls;
+  line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  el.appendChild(line); el.scrollTop = el.scrollHeight;
+}
+// API paths are relative to this page's directory, so the page also works
+// when served under a sub-path (e.g. behind a reverse proxy).
+const BASE = location.pathname.replace(/\/[^/]*$/, "/");
+
+async function api(path, body, method) {
+  const opts = { method: method || (body ? "POST" : "GET") };
+  if (body) { opts.headers = {"Content-Type":"application/json"}; opts.body = JSON.stringify(body); }
+  try { return await (await fetch(BASE + path.replace(/^\//, ""), opts)).json(); }
+  catch (e) { log(`Network error on ${path}: ${e}`, "log-err"); return { ok:false, error:String(e) }; }
+}
+function report(name, res) {
+  if (res.ok) log(`${name} ✓`, "log-ok");
+  else log(`${name} ✗ ${res.error || ("ErrorID " + res.errid)}`, "log-err");
+  return res;
+}
+
+const fmtAxis = (def, v) => (typeof v === "number" ? v : parseFloat(v)).toFixed(def.id === "r" ? 1 : 0);
+// Push a value into an axis's number box, unless the user is typing in it.
+function showAxis(def, v) {
+  const num = numEls[def.id];
+  if (num && num !== document.activeElement) num.value = fmtAxis(def, v);
+}
+
+function buildAxes() {
+  const wrap = document.getElementById("axes");
+  wrap.innerHTML = "";
+  AXIS_DEFS.forEach(def => {
+    const [lo, hi] = ws[def.id];
+    const div = document.createElement("div");
+    div.className = "axis";
+    div.innerHTML = `
+      <div class="label">
+        <span class="name">${def.name}</span>
+        <span class="readout">
+          <input type="number" class="valnum" id="${def.id}Num" step="${def.step}"
+            min="${lo}" max="${hi}" value="0" disabled />
+          <span class="unit">${def.unit}</span>
+          <span class="actual" id="${def.id}Act"></span></span>
+      </div>
+      <input type="range" id="${def.id}" min="${lo}" max="${hi}" step="${def.step}" value="0" disabled />
+      <div class="limits"><span>${lo} ${def.unit}</span><span>${hi} ${def.unit}</span></div>`;
+    wrap.appendChild(div);
+  });
+  AXIS_DEFS.forEach(def => {
+    const el = document.getElementById(def.id);
+    const num = document.getElementById(def.id + "Num");
+    sliderEls[def.id] = el;
+    numEls[def.id] = num;
+    el.addEventListener("input", () => { showAxis(def, el.value); queueMove(); });
+    // mark which slider the user is dragging so cross-window sync doesn't fight it
+    el.addEventListener("pointerdown", () => draggingId = def.id);
+    el.addEventListener("keydown", () => draggingId = def.id);
+    // type an exact value: clamp into the workspace, move the slider, send it
+    num.addEventListener("focus", () => draggingId = def.id);   // hold off sync while typing
+    num.addEventListener("blur", () => draggingId = null);
+    num.addEventListener("change", () => {
+      const [lo, hi] = ws[def.id];
+      let v = parseFloat(num.value);
+      if (Number.isNaN(v)) return;
+      v = Math.max(lo, Math.min(hi, v));
+      num.value = fmtAxis(def, v);
+      el.value = v;
+      queueMove();
+    });
+  });
+  document.getElementById("wsHint").textContent =
+    `Reach ring ${radiusMin}–${radiusMax} mm; Z ${ws.z[0]}–${ws.z[1]} mm (approx).`;
+}
+
+let lastSent = 0, pending = null, timer = null;
+const MOVE_INTERVAL = 60;
+function queueMove() {
+  pending = {
+    x: parseFloat(sliderEls.x.value), y: parseFloat(sliderEls.y.value),
+    z: parseFloat(sliderEls.z.value), r: parseFloat(sliderEls.r.value),
+  };
+  const now = Date.now();
+  if (now - lastSent >= MOVE_INTERVAL) flushMove();
+  else if (!timer) timer = setTimeout(flushMove, MOVE_INTERVAL - (now - lastSent));
+}
+async function flushMove() {
+  if (timer) { clearTimeout(timer); timer = null; }
+  if (!pending || !connected) return;
+  const target = pending; pending = null; lastSent = Date.now();
+  const res = await api("/api/move", target);
+  if (!res.ok) log(`move ✗ ${res.error || ("ErrorID " + res.errid)}`, "log-err");
+}
+
+function setControlsEnabled(on) {
+  connected = on;
+  ["btnDisconnect","btnEnable","btnDisable","btnClear","btnStop",
+   "btnSync","btnSuck","btnBlow","btnPumpOff","speed","smooth"].forEach(id =>
+    document.getElementById(id).disabled = !on);
+  Object.values(sliderEls).forEach(el => el.disabled = !on);
+  Object.values(numEls).forEach(el => el.disabled = !on);
+  document.getElementById("btnConnect").disabled = on;
+}
+
+async function poll() { applyStatus(await api("/api/status")); }   // one-shot pull
+function applyStatus(s) {
+  const connPill = document.getElementById("connPill");
+  connPill.className = "pill " + (s.connected ? "on" : "off");
+  document.getElementById("connText").textContent = s.connected ? "Connected" : "Disconnected";
+
+  document.getElementById("modeText").textContent = s.mode_name || "—";
+  document.getElementById("modePill").className =
+    "pill " + (s.error ? "error" : (s.enabled ? "on" : "off"));
+  if (s.connected !== connected) setControlsEnabled(s.connected);
+
+  document.getElementById("sFeed").textContent = s.feedback_ok ? "OK (8 ms)" : "—";
+  document.getElementById("sMode").textContent = (s.robot_mode ?? "—") + " · " + (s.mode_name || "");
+  document.getElementById("sEnabled").textContent = s.enabled ? "ON" : "off";
+  document.getElementById("sEnabled").style.color = s.enabled ? "var(--ok)" : "var(--muted)";
+  document.getElementById("sError").textContent = s.error ? "ERROR" : "none";
+  document.getElementById("sError").style.color = s.error ? "var(--err)" : "var(--muted)";
+
+  if (s.servo_error && s.servo_error !== lastServoError)
+    log("Servo follower stopped: " + s.servo_error, "log-err");
+  lastServoError = s.servo_error || null;
+
+  pumpMode = s.pump_mode || "off";
+  document.getElementById("btnSuck").className = pumpMode === "suck" ? "ok" : "";
+  document.getElementById("btnBlow").className = pumpMode === "blow" ? "stop" : "";
+  document.getElementById("pumpPill").className =
+    "pill " + (pumpMode === "off" ? "off" : (pumpMode === "conflict" ? "error" : "on"));
+  document.getElementById("pumpText").textContent = pumpMode;
+
+  if (Array.isArray(s.pose)) {
+    AXIS_DEFS.forEach((def, i) => {
+      const act = document.getElementById(def.id + "Act");
+      if (act) act.textContent = "actual " + s.pose[i].toFixed(def.id === "r" ? 1 : 0) + " " + def.unit;
+    });
+  }
+
+  // Cross-window slider sync: follow the server's commanded target so several
+  // controller windows stay in lock-step. Skip the slider this window is
+  // actively dragging; deadband avoids float jitter (0.5 mm / 0.5° granularity).
+  if (Array.isArray(s.target)) {
+    AXIS_DEFS.forEach((def, i) => {
+      if (draggingId === def.id) return;
+      const el = sliderEls[def.id];
+      const v = s.target[i];
+      if (typeof v !== "number") return;
+      if (Math.abs(parseFloat(el.value) - v) > 0.25) {
+        const [lo, hi] = ws[def.id];
+        el.value = Math.max(lo, Math.min(hi, v));
+        showAxis(def, el.value);
+      }
+    });
+  }
+
+  const smoothEl = document.getElementById("smooth");
+  if (smoothEl !== document.activeElement && typeof s.ramp_secs === "number") {
+    smoothEl.value = s.ramp_secs;
+    document.getElementById("smoothVal").textContent = s.ramp_secs.toFixed(2) + " s";
+  }
+
+  applySlots(s.slots || []);
+}
+
+// ---- saved locations: 10 fixed slots ---------------------------------------
+// Built once (always present), then updated in place from the live stream — so
+// the recall buttons / API endpoints are stable even while a slot is empty.
+const slotEls = [];
+function buildSlots() {
+  const wrap = document.getElementById("locList");
+  wrap.innerHTML = "";
+  for (let i = 0; i < 10; i++) {
+    const n = i + 1;
+    const row = document.createElement("div");
+    row.className = "locrow empty";
+    row.innerHTML = `
+      <span class="locnum">#${n}</span>
+      <input class="locname" type="text" placeholder="Slot ${n}" />
+      <span class="loccoords">
+        X<input type="number" class="loccoord" data-k="x" step="1">
+        Y<input type="number" class="loccoord" data-k="y" step="1">
+        Z<input type="number" class="loccoord" data-k="z" step="1">
+        R<input type="number" class="loccoord" data-k="r" step="0.5">
+      </span>
+      <button type="button" class="locset">Set</button>
+      <button type="button" class="locrecall" disabled>Recall</button>
+      <button type="button" class="del" title="Clear slot">✕</button>`;
+    wrap.appendChild(row);
+    const q = sel => row.querySelector(sel);
+    const rec = { row, name: q(".locname"),
+      x: q('[data-k="x"]'), y: q('[data-k="y"]'), z: q('[data-k="z"]'), r: q('[data-k="r"]'),
+      set: q(".locset"), recall: q(".locrecall"), clear: q(".del") };
+
+    rec.name.onchange = () => api(`/api/locations/${n}`, { name: rec.name.value });
+    ["x","y","z","r"].forEach(k => rec[k].onchange = () => patchSlotPose(i));
+    rec.set.onclick = () => api(`/api/locations/${n}`, { pose: {
+      x:+sliderEls.x.value, y:+sliderEls.y.value, z:+sliderEls.z.value, r:+sliderEls.r.value } });
+    rec.recall.onclick = async () => {
+      const res = await api(`/api/recall/${n}`, {});
+      if (res.ok) log(`Recall “${res.slot.name || ('#'+n)}” → moving`, "log-ok");
+      else log(`Recall ✗ ${res.error || ("ErrorID " + res.errid)}`, "log-err");
+    };
+    rec.clear.onclick = () => api(`/api/locations/${n}/clear`, {});
+    slotEls.push(rec);
+  }
+}
+
+function patchSlotPose(i) {
+  const r = slotEls[i];
+  api(`/api/locations/${i + 1}`, { pose: {
+    x: +r.x.value || 0, y: +r.y.value || 0, z: +r.z.value || 0, r: +r.r.value || 0 } });
+}
+
+// Push the latest slot data into the fixed rows, skipping any field being edited.
+function applySlots(slots) {
+  slots.forEach((s, i) => {
+    const r = slotEls[i];
+    if (!r) return;
+    if (document.activeElement !== r.name) r.name.value = s.name || "";
+    ["x","y","z","r"].forEach(k => {
+      if (document.activeElement !== r[k]) r[k].value = s.set ? s[k] : "";
+    });
+    r.row.classList.toggle("empty", !s.set);
+    r.recall.disabled = !s.set || !connected;
+  });
+}
+
+function syncSliders() {
+  api("/api/status").then(s => {
+    if (!Array.isArray(s.pose)) return;
+    AXIS_DEFS.forEach((def, i) => {
+      const el = sliderEls[def.id];
+      const [lo, hi] = ws[def.id];
+      const v = Math.max(lo, Math.min(hi, s.pose[i]));
+      el.value = v;
+      showAxis(def, v);
+    });
+    log("Sliders synced to current TCP pose", "log-info");
+  });
+}
+
+function wire() {
+  document.getElementById("btnConnect").onclick = async () => {
+    const ip = document.getElementById("ip").value.trim();
+    log(`Connecting to ${ip} …`);
+    report("connect", await api("/api/connect", { ip }));
+  };
+  document.getElementById("btnDisconnect").onclick = async () =>
+    report("disconnect", await api("/api/disconnect", {}));
+  document.getElementById("btnEnable").onclick = async () => {
+    const res = report("enable", await api("/api/enable", {}));
+    if (res.ok) setTimeout(syncSliders, 300);  // align sliders to start pose
+  };
+  document.getElementById("btnDisable").onclick = async () =>
+    report("disable", await api("/api/disable", {}));
+  document.getElementById("btnClear").onclick = async () => {
+    const c = report("clear error", await api("/api/clear_error", {}));
+    if (!c.ok) return;
+    // Re-arm so you can drive again: clearing the error alone leaves the servo
+    // follower stopped, so Enable (restarts ServoP + holds the current pose) is
+    // the documented next step — do it automatically.
+    const e = report("enable", await api("/api/enable", {}));
+    if (e.ok) setTimeout(syncSliders, 300);
+  };
+  document.getElementById("btnStop").onclick = async () => {
+    report("stop / hold", await api("/api/stop", {})); syncSliders();
+  };
+  document.getElementById("btnSync").onclick = syncSliders;
+  document.getElementById("btnSuck").onclick = async () =>
+    report("vacuum (pull)", await api("/api/pump", { mode:"suck" }));
+  document.getElementById("btnBlow").onclick = async () =>
+    report("blow (push)", await api("/api/pump", { mode:"blow" }));
+  document.getElementById("btnPumpOff").onclick = async () =>
+    report("pump off", await api("/api/pump", { mode:"off" }));
+
+  const speed = document.getElementById("speed");
+  let speedTimer = null;
+  speed.addEventListener("input", () => {
+    document.getElementById("speedVal").textContent = speed.value + "%";
+    clearTimeout(speedTimer);
+    speedTimer = setTimeout(async () =>
+      report("speed", await api("/api/speed", { ratio: parseInt(speed.value) })), 150);
+  });
+
+  const smooth = document.getElementById("smooth");
+  let smoothTimer = null;
+  smooth.addEventListener("input", () => {
+    document.getElementById("smoothVal").textContent = (+smooth.value).toFixed(2) + " s";
+    clearTimeout(smoothTimer);
+    smoothTimer = setTimeout(async () =>
+      report("smoothness", await api("/api/smoothness", { secs: parseFloat(smooth.value) })), 150);
+  });
+}
+
+async function init() {
+  const cfg = await api("/api/config");
+  if (cfg.workspace) ws = cfg.workspace;
+  if (cfg.radius_min) radiusMin = cfg.radius_min;
+  if (cfg.radius_max) radiusMax = cfg.radius_max;
+  if (cfg.default_ip) document.getElementById("ip").value = cfg.default_ip;
+  buildAxes();
+  buildSlots();
+  wire();
+  setControlsEnabled(false);
+  poll();   // initial paint
+  const es = new EventSource(BASE + "api/events");   // live pushes; auto-reconnects
+  es.onmessage = e => { try { applyStatus(JSON.parse(e.data)); } catch (_) {} };
+  log("Ready. Put the robot in API mode, then Connect → Enable.", "log-info");
+}
+init();
+</script>
+</body>
+</html>
