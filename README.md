@@ -20,7 +20,8 @@ from the same project.
 ## Install
 
 ```sh
-cd code/mg400-base
+git clone https://github.com/KKallas/mg400-base.git
+cd mg400-base
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 mg400 --help
