@@ -22,7 +22,7 @@ from the same project.
 ```sh
 git clone https://github.com/KKallas/mg400-base.git
 cd mg400-base
-python3 -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv && source .venv/Scripts/activate
 pip install -e .
 mg400 --help
 ```
