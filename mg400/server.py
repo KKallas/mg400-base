@@ -263,6 +263,7 @@ def _status_dict():
     # The commanded target lets other open windows sync their sliders to it.
     st["target"] = None if robot is None else robot.get_target()
     st["ramp_secs"] = _ramp_secs
+    st["z_floor"] = Z_FLOOR
     st["speed_ratio"] = _speed_ratio
     with _loc_lock:
         st["slots"] = [_slot_public(i) for i in range(NUM_SLOTS)]
@@ -419,6 +420,59 @@ def move():
     robot.set_target_pose(x, y, z, r)
     return _ok(clamped={"x": round(x, 2), "y": round(y, 2),
                         "z": round(z, 2), "r": round(r, 2)})
+
+
+@app.route("/api/jog", methods=["POST"])
+def jog():
+    """Step one axis by `delta` from the current commanded target (falls back to
+    the live pose): {"axis":"z","delta":-1}. Clamped like /api/move. Small,
+    exact steps for teaching a location without slider jumps."""
+    robot = _current()
+    if robot is None or not robot.is_connected():
+        return _not_connected(robot)
+    data = request.json or {}
+    axis = data.get("axis")
+    if axis not in ("x", "y", "z", "r"):
+        return _fail("axis must be x, y, z or r")
+    try:
+        delta = float(data["delta"])
+    except (KeyError, TypeError, ValueError):
+        return _fail("delta must be a number")
+    base = robot.get_target() or list(robot.get_state()["pose"])
+    i = "xyzr".index(axis)
+    base[i] += delta
+    x, y, z, r = _clamp_pose(*base)
+    robot.set_target_pose(x, y, z, r)
+    return _ok(target={"x": round(x, 2), "y": round(y, 2), "z": round(z, 2), "r": round(r, 2)})
+
+
+@app.route("/api/sync", methods=["POST"])
+def sync_target():
+    """Make the commanded target equal the live pose, so the sliders (which follow
+    the target) show where the arm really is and the next move starts from
+    there."""
+    robot = _current()
+    if robot is None or not robot.is_connected():
+        return _not_connected(robot)
+    pose = robot.get_state().get("pose")
+    if not pose:
+        return _fail("no pose from the robot yet")
+    robot.set_target_pose(*pose)
+    return _ok(target=dict(zip("xyzr", (round(v, 2) for v in pose))))
+
+
+@app.route("/api/z_floor", methods=["POST"])
+def set_z_floor():
+    """Change the Z floor at runtime: {"z": -95}. Not below the workspace Z
+    minimum. Measure it: jog down until the tool nearly touches, add a few mm."""
+    global Z_FLOOR
+    try:
+        z = float((request.json or {})["z"])
+    except (KeyError, TypeError, ValueError):
+        return _fail("z must be a number")
+    Z_FLOOR = max(WORKSPACE["z"][0], min(WORKSPACE["z"][1], z))
+    _live.bump()
+    return _ok(z_floor=Z_FLOOR)
 
 
 # ---- saved locations: NUM_SLOTS fixed slots (edit / set / recall) ----------

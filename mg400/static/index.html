@@ -48,6 +48,8 @@
   .stat .k { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
   .stat .v { font-size:20px; font-variant-numeric:tabular-nums; margin-top:2px; }
   .axis { margin:18px 0; }
+  .jog { display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; }
+  .jog button { padding:4px 8px; min-width:44px; font-variant-numeric:tabular-nums; }
   .axis .label { display:flex; justify-content:space-between; margin-bottom:6px; }
   .axis .name { font-weight:600; }
   .axis .val { font-variant-numeric:tabular-nums; color:var(--accent); }
@@ -161,6 +163,8 @@
     <div id="axes"></div>
     <div class="row" style="margin-top:10px">
       <button id="btnSync" disabled>Sync sliders to robot</button>
+      <label class="hint">Z floor <input type="number" id="zFloorNum" step="1" style="width:70px" disabled> mm</label>
+      <button id="btnZFloor" disabled>Set floor</button>
       <span class="hint" id="wsHint"></span>
     </div>
     <div class="hint">Targets are clamped to the reachable workspace (Z/R range
@@ -195,6 +199,7 @@
 </main>
 
 <script>
+const JOG_STEPS = [-10, -5, -1, -0.5, 0.5, 1, 5, 10];
 const AXIS_DEFS = [
   { id:"x", name:"X — forward / back", unit:"mm", step:1 },
   { id:"y", name:"Y — left / right", unit:"mm", step:1 },
@@ -260,7 +265,8 @@ function buildAxes() {
           <span class="actual" id="${def.id}Act"></span></span>
       </div>
       <input type="range" id="${def.id}" min="${lo}" max="${hi}" step="${def.step}" value="0" disabled />
-      <div class="limits"><span>${lo} ${def.unit}</span><span>${hi} ${def.unit}</span></div>`;
+      <div class="limits"><span>${lo} ${def.unit}</span><span>${hi} ${def.unit}</span></div>
+      <div class="jog">${JOG_STEPS.map(d => `<button type="button" class="jogbtn" data-axis="${def.id}" data-d="${d}" disabled>${d > 0 ? "+" : ""}${d}</button>`).join("")}</div>`;
     wrap.appendChild(div);
   });
   AXIS_DEFS.forEach(def => {
@@ -268,7 +274,8 @@ function buildAxes() {
     const num = document.getElementById(def.id + "Num");
     sliderEls[def.id] = el;
     numEls[def.id] = num;
-    el.addEventListener("input", () => { showAxis(def, el.value); queueMove(); });
+    el.addEventListener("input", () => showAxis(def, el.value));   // preview only
+    el.addEventListener("change", () => { queueMove(); draggingId = null; });   // move on release
     // mark which slider the user is dragging so cross-window sync doesn't fight it
     el.addEventListener("pointerdown", () => draggingId = def.id);
     el.addEventListener("keydown", () => draggingId = def.id);
@@ -284,6 +291,10 @@ function buildAxes() {
       el.value = v;
       queueMove();
     });
+  });
+  wrap.querySelectorAll(".jogbtn").forEach(b => b.onclick = async () => {
+    const res = await api("/api/jog", { axis: b.dataset.axis, delta: parseFloat(b.dataset.d) });
+    if (!res.ok) log(`jog ✗ ${res.error || ("ErrorID " + res.errid)}`, "log-err");
   });
   document.getElementById("wsHint").textContent =
     `Reach ring ${radiusMin}–${radiusMax} mm; Z ${ws.z[0]}–${ws.z[1]} mm (approx)` +
@@ -316,6 +327,8 @@ function setControlsEnabled(on) {
     document.getElementById(id).disabled = !on);
   Object.values(sliderEls).forEach(el => el.disabled = !on);
   Object.values(numEls).forEach(el => el.disabled = !on);
+  document.querySelectorAll(".jogbtn").forEach(el => el.disabled = !on);
+  ["zFloorNum","btnZFloor"].forEach(id => document.getElementById(id).disabled = !on);
   document.getElementById("btnConnect").disabled = on;
 }
 
@@ -399,6 +412,7 @@ function applyStatus(s) {
     document.getElementById("speedVal").textContent = s.speed_ratio + "%";
   }
 
+  if (typeof s.z_floor === "number" && s.z_floor !== zFloor) applyFloor(s.z_floor);
   applySlots(s.slots || []);
 }
 
@@ -447,8 +461,9 @@ function buildSlots() {
 
 function patchSlotPose(i) {
   const r = slotEls[i];
-  api(`/api/locations/${i + 1}`, { pose: {
-    x: +r.x.value || 0, y: +r.y.value || 0, z: +r.z.value || 0, r: +r.r.value || 0 } });
+  // an empty box means "keep the current slider value", never 0 (0,0 is the base axis)
+  const v = k => (r[k].value === "" || Number.isNaN(+r[k].value)) ? +sliderEls[k].value : +r[k].value;
+  api(`/api/locations/${i + 1}`, { pose: { x: v("x"), y: v("y"), z: v("z"), r: v("r") } });
 }
 
 // Push the latest slot data into the fixed rows, skipping any field being edited.
@@ -506,7 +521,19 @@ function wire() {
   document.getElementById("btnStop").onclick = async () => {
     report("stop / hold", await api("/api/stop", {})); syncSliders();
   };
-  document.getElementById("btnSync").onclick = syncSliders;
+  document.getElementById("btnSync").onclick = async () => {
+    const res = await api("/api/sync", {});
+    if (res.ok) log(`Target synced to robot pose ${JSON.stringify(res.target)}`, "log-ok");
+    else log(`sync ✗ ${res.error}`, "log-err");
+  };
+  document.getElementById("btnZFloor").onclick = async () => {
+    const z = parseFloat(document.getElementById("zFloorNum").value);
+    if (Number.isNaN(z)) return;
+    if (!confirm(`Set Z floor to ${z} mm? The arm will be allowed down to this height.`)) return;
+    const res = await api("/api/z_floor", { z });
+    if (res.ok) { applyFloor(res.z_floor); log(`Z floor set to ${res.z_floor} mm`, "log-ok"); }
+    else log(`floor ✗ ${res.error}`, "log-err");
+  };
   document.getElementById("btnSuck").onclick = async () =>
     report("vacuum (pull)", await api("/api/pump", { mode:"suck" }));
   document.getElementById("btnBlow").onclick = async () =>
@@ -533,9 +560,22 @@ function wire() {
   });
 }
 
+let wsZMin = -150;
+function applyFloor(f) {
+  if (typeof f !== "number") return;
+  zFloor = f;
+  ws.z = [Math.min(Math.max(wsZMin, f), ws.z[1]), ws.z[1]];
+  [sliderEls.z, numEls.z].forEach(el => { if (el) el.min = ws.z[0]; });
+  const lim = sliderEls.z && sliderEls.z.parentElement.querySelector(".limits span");
+  if (lim) lim.textContent = `${ws.z[0]} mm`;
+  const fn = document.getElementById("zFloorNum");
+  if (fn && fn !== document.activeElement) fn.value = f;
+  document.getElementById("wsHint").textContent =
+    `Reach ring ${radiusMin}–${radiusMax} mm; Z ${ws.z[0]}–${ws.z[1]} mm (approx); Z floor ${zFloor} mm.`;
+}
 async function init() {
   const cfg = await api("/api/config");
-  if (cfg.workspace) ws = cfg.workspace;
+  if (cfg.workspace) { ws = cfg.workspace; wsZMin = ws.z[0]; }
   if (cfg.radius_min) radiusMin = cfg.radius_min;
   if (cfg.radius_max) radiusMax = cfg.radius_max;
   if (typeof cfg.z_floor === "number") {
@@ -544,6 +584,7 @@ async function init() {
   }
   if (cfg.default_ip) document.getElementById("ip").value = cfg.default_ip;
   buildAxes();
+  applyFloor(zFloor);
   buildSlots();
   wire();
   setControlsEnabled(false);
