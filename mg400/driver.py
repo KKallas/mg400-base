@@ -520,6 +520,7 @@ class DobotMG400:
             if r is not None:
                 self._target[3] = float(r)
         self._last_motion_ts = time.time()   # a fresh move gets its stall grace
+        self._limit_hit(None)   # a new command clears the "held at a limit" note
 
     def hold(self):
         """Smooth stop: aim the target at the follower's natural braking point so
@@ -665,8 +666,6 @@ class DobotMG400:
                                 setpoint, vel = prev, [0.0, 0.0, 0.0, 0.0]
                                 self._target = list(prev)
                                 self._limit_hit(why)
-                        elif self._state.get("limit_warning"):
-                            self._limit_hit(None)
                         self._setpoint, self._vel = setpoint, vel
                     errid, resp = self.servo_p(*setpoint)
                     if errid != 0:
