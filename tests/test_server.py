@@ -21,11 +21,15 @@ class ServerTest(unittest.TestCase):
         self._real_robot = server.DobotMG400
         server.DobotMG400 = Robot
         self.api = server.app.test_client()
+        # these tests drive fast/far on purpose; the lab caps get their own test
+        self._caps = (server.MAX_SPEED, server.MAX_MOVE_MM)
+        server.MAX_SPEED, server.MAX_MOVE_MM = 100, 1e9
 
     def tearDown(self):
         self.api.post("/api/disconnect")
         server.DobotMG400 = self._real_robot
         server._speed_ratio = 10
+        server.MAX_SPEED, server.MAX_MOVE_MM = self._caps
         self.fake.close()
 
     def post(self, path, body=None):
@@ -59,6 +63,24 @@ class LimitsTest(unittest.TestCase):
         self.assertAlmostEqual(math.hypot(x, y), 150)
         x, y, _, _ = clamp_pose(500, 0, 0, 0)
         self.assertAlmostEqual(math.hypot(x, y), 440)
+
+
+class TurtleCapsTest(ServerTest):
+    """Lab rule: speed capped at MAX_SPEED, one /api/move may not jump far."""
+
+    def test_caps(self):
+        server.MAX_SPEED, server.MAX_MOVE_MM = 5, 20
+        self.api.post("/api/connect", json={"ip": "127.0.0.1"})
+        self.assertTrue(self.api.post("/api/enable").json["ok"])
+        self.api.post("/api/speed", json={"ratio": 100})
+        self.assertEqual(server._speed_ratio, 5)
+        x0 = self.fake.pose[0]
+        far = self.api.post("/api/move", json={"x": x0 + 100, "y": 0, "z": 0}).json
+        self.assertFalse(far["ok"])
+        self.assertIn("refused", far["error"])
+        near = self.api.post("/api/move", json={"x": x0 + 5, "y": 0, "z": 0}).json
+        self.assertTrue(near["ok"])
+        self.assertTrue(self.api.post("/api/jog", json={"axis": "z", "delta": -1}).json["ok"])
 
 
 if __name__ == "__main__":

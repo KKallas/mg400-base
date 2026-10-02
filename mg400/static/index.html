@@ -146,13 +146,13 @@
     <h2>Following speed</h2>
     <div class="axis">
       <div class="label"><span class="name">Speed</span><span class="val" id="speedVal">10%</span></div>
-      <input type="range" id="speed" min="1" max="100" value="10" disabled />
+      <input type="range" id="speed" min="1" max="5" value="2" disabled />
       <div class="hint">Caps linear (mm/s) and rotational (deg/s) following speed.
         Start low for first Cartesian tests.</div>
     </div>
     <div class="axis">
       <div class="label"><span class="name">Smoothness (ramp)</span><span class="val" id="smoothVal">0.50 s</span></div>
-      <input type="range" id="smooth" min="0.05" max="0.8" step="0.05" value="0.5" disabled />
+      <input type="range" id="smooth" min="0.05" max="1.5" step="0.05" value="1.5" disabled />
       <div class="hint">Ramp-up / braking time. Higher = gentler start &amp; stop, no
         overshoot; lower = snappier.</div>
     </div>
@@ -583,6 +583,7 @@ async function init() {
     ws.z = [Math.min(Math.max(ws.z[0], zFloor), ws.z[1]), ws.z[1]];   // slider stops at the floor
   }
   if (cfg.default_ip) document.getElementById("ip").value = cfg.default_ip;
+  if (cfg.max_speed) document.getElementById("speed").max = cfg.max_speed;
   buildAxes();
   applyFloor(zFloor);
   buildSlots();

@@ -17,6 +17,7 @@ reach and start at a low speed.
 
 import argparse
 import json
+import math
 import os
 import threading
 
@@ -42,7 +43,7 @@ MAX_LIN_VEL = 200.0  # mm/s
 MAX_ANG_VEL = 90.0   # deg/s
 # Follower easing: time to ramp from rest to the speed cap (and to brake to a
 # stop). Larger ramp = gentler start/stop and a longer braking distance.
-RAMP_SECS = 0.50
+RAMP_SECS = 1.50   # lab rule: gentlest start/stop by default
 
 # Air pump box on two DO lines: at most one energised, both low = off.
 # Verify these against the pump box manual before the first Enable.
@@ -61,7 +62,13 @@ _live = live.LiveState()
 
 # Motion shaping: last speed % and ramp time, pushed to the follower together as
 # velocity + acceleration caps.
-_speed_ratio = 10     # % of MAX_LIN_VEL / MAX_ANG_VEL → 20 mm/s, 9 deg/s
+# Lab rule ("turtle"): start at 2 % (4 mm/s) and never allow more than
+# MG400_MAX_SPEED % (default 5 % = 10 mm/s) from the page or the API.
+MAX_SPEED = max(1, min(100, int(os.environ.get("MG400_MAX_SPEED", 5))))
+# A single /api/move may not jump further than this from the live pose (mm);
+# sliders can't throw the arm across the table. Jog and recall are separate.
+MAX_MOVE_MM = float(os.environ.get("MG400_MAX_MOVE_MM", 20))
+_speed_ratio = min(2, MAX_SPEED)   # % of MAX_LIN_VEL / MAX_ANG_VEL
 _ramp_secs = RAMP_SECS
 
 
@@ -241,6 +248,8 @@ def config():
         "default_ip": DEFAULT_IP,
         "suck_do": SUCK_DO_INDEX,
         "blow_do": BLOW_DO_INDEX,
+        "max_speed": MAX_SPEED,
+        "max_move_mm": MAX_MOVE_MM,
     })
 
 
@@ -348,7 +357,7 @@ def speed():
     robot = _current()
     if robot is None or not robot.is_connected():
         return _not_connected(robot)
-    ratio = _clamp(int((request.json or {}).get("ratio", 30)), 1, 100)
+    ratio = _clamp(int((request.json or {}).get("ratio", 2)), 1, MAX_SPEED)
     _speed_ratio = ratio
     _apply_motion(robot)
     return _command(lambda r: r.speed_factor(ratio))
@@ -417,6 +426,10 @@ def move():
     except (KeyError, ValueError, TypeError):
         return _fail("Expected numeric x, y, z (r optional)")
     x, y, z, r = _clamp_pose(x, y, z, r)
+    pose = robot.get_state().get("pose") or [x, y, z, r]
+    jump = math.dist((x, y, z), pose[:3])
+    if jump > MAX_MOVE_MM:
+        return _fail(f"move of {jump:.0f} mm refused (limit {MAX_MOVE_MM:g} mm per command) -- use the jog buttons")
     robot.set_target_pose(x, y, z, r)
     return _ok(clamped={"x": round(x, 2), "y": round(y, 2),
                         "z": round(z, 2), "r": round(r, 2)})
