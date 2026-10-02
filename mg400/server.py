@@ -22,7 +22,7 @@ import threading
 
 from flask import Flask, jsonify, request, send_from_directory
 
-from . import live
+from . import kinematics, live
 from .driver import DobotMG400, DobotError
 from .limits import DEFAULT_Z_FLOOR, RADIUS_MAX, RADIUS_MIN, WORKSPACE, clamp_pose
 
@@ -444,6 +444,38 @@ def jog():
     x, y, z, r = _clamp_pose(*base)
     robot.set_target_pose(x, y, z, r)
     return _ok(target={"x": round(x, 2), "y": round(y, 2), "z": round(z, 2), "r": round(r, 2)})
+
+
+@app.route("/api/recover", methods=["POST"])
+def recover():
+    """Back the arm out of a joint/parallelogram limit alarm (34/73/74...) with
+    slow joint jogs, then restart the follower at the new pose."""
+    robot = _current()
+    if robot is None or not robot.is_connected():
+        return _not_connected(robot)
+    try:
+        ok, msg = robot.recover_from_limit()
+    except DobotError as e:
+        return _fail(str(e), errid=e.errid)
+    if ok:
+        robot.start_servo()
+        _apply_motion(robot)
+        robot.speed_factor(_speed_ratio)
+    return jsonify({"ok": ok, "message": msg, "error": None if ok else msg})
+
+
+@app.route("/api/check", methods=["POST"])
+def check_pose():
+    """Would this pose hit a joint or parallelogram limit? {"x","y","z"} ->
+    ok, reason, joints. Uses the same model as the follower's guard."""
+    data = request.json or {}
+    try:
+        x, y, z = float(data["x"]), float(data["y"]), float(data["z"])
+    except (KeyError, TypeError, ValueError):
+        return _fail("Expected numeric x, y, z")
+    ok, reason, joints = kinematics.check(x, y, z)
+    return jsonify({"ok": True, "reachable": ok, "reason": reason,
+                    "joints": None if joints is None else [round(v, 2) for v in joints]})
 
 
 @app.route("/api/sync", methods=["POST"])

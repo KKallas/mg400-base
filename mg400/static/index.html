@@ -116,10 +116,13 @@
       <button id="btnEnable" class="ok" disabled>Enable</button>
       <button id="btnDisable" disabled>Disable</button>
       <button id="btnClear" disabled>Clear Error</button>
+      <button id="btnRecover" disabled title="Slowly jog the arm back out of a joint / parallelogram limit alarm">Recover from limit</button>
     </div>
     <div class="hint" id="connHint">Robot must be in API mode — see README.md.
       Connect opens control 29999 · motion 30003 · feedback 30004.</div>
     <div class="hint" id="linkErr" style="color:var(--err)" hidden></div>
+    <div class="hint" id="limitErr" style="color:var(--err);font-weight:600" hidden></div>
+    <div class="hint" id="limitWarn" style="color:#d08a00;font-weight:600" hidden></div>
   </section>
 
   <section class="panel">
@@ -211,6 +214,7 @@ let radiusMin = 150, radiusMax = 440, zFloor = null;
 let connected = false;
 let sliderEls = {};
 const numEls = {};   // per-axis type-in number boxes, kept in sync with the sliders
+let lastLimitWarn = null;
 let lastServoError = null, lastLinkError = null, wasStalled = false, pumpMode = "off";
 // id of the slider being dragged in THIS window (or null); cross-window sync
 // follows the server target but never clobbers the slider you're holding.
@@ -323,7 +327,7 @@ async function flushMove() {
 function setControlsEnabled(on) {
   connected = on;
   ["btnDisconnect","btnEnable","btnDisable","btnClear","btnStop",
-   "btnSync","btnSuck","btnBlow","btnPumpOff","speed","smooth"].forEach(id =>
+   "btnSync","btnSuck","btnBlow","btnPumpOff","speed","smooth","btnRecover"].forEach(id =>
     document.getElementById(id).disabled = !on);
   Object.values(sliderEls).forEach(el => el.disabled = !on);
   Object.values(numEls).forEach(el => el.disabled = !on);
@@ -340,6 +344,26 @@ function applyStatus(s) {
   connPill.className = "pill " + (s.connected ? "on" : (lost ? "error" : "off"));
   document.getElementById("connText").textContent =
     s.connected ? "Connected" : (lost ? "Connection lost" : "Disconnected");
+  // joint / parallelogram limit: alarm text + what to do, and the follower's soft stop
+  const LIMIT_TEXT = {
+    34: "34 — target out of the working area (a joint would pass its stop, e.g. J3 when going too low)",
+    73: "73 — parallelogram negative limit: the arm is folded too far (too close to the base)",
+    74: "74 — parallelogram positive limit: the arm is stretched too far",
+  };
+  const ids = s.alarm_ids || [];
+  const limitIds = ids.filter(i => LIMIT_TEXT[i] || (s.fault_kind === "workspace_limit"));
+  const limitErr = document.getElementById("limitErr");
+  limitErr.hidden = !(s.error && limitIds.length);
+  if (!limitErr.hidden) limitErr.textContent = "Limit alarm " +
+    limitIds.map(i => LIMIT_TEXT[i] || i).join("; ") +
+    ". Clear Error alone will not hold — press “Recover from limit”.";
+  const limitWarn = document.getElementById("limitWarn");
+  limitWarn.hidden = !s.limit_warning;
+  if (s.limit_warning) limitWarn.textContent =
+    `Stopped before a limit: ${s.limit_warning}. Move the other way (away from the base / up).`;
+  if (s.limit_warning && s.limit_warning !== lastLimitWarn) log("Limit guard: " + s.limit_warning, "log-err");
+  lastLimitWarn = s.limit_warning || null;
+
   const linkErr = document.getElementById("linkErr");
   linkErr.hidden = !lost;
   if (lost) linkErr.textContent = `Connection lost: ${s.link_error}. Press Connect to reconnect.`;
@@ -520,6 +544,12 @@ function wire() {
   };
   document.getElementById("btnStop").onclick = async () => {
     report("stop / hold", await api("/api/stop", {})); syncSliders();
+  };
+  document.getElementById("btnRecover").onclick = async () => {
+    log("Recovering: slow joint jog out of the limit …");
+    const res = await api("/api/recover", {});
+    if (res.ok) log(`Recovered ✓ ${res.message}`, "log-ok");
+    else log(`Recover ✗ ${res.error || res.message}`, "log-err");
   };
   document.getElementById("btnSync").onclick = async () => {
     const res = await api("/api/sync", {});

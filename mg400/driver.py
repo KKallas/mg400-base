@@ -39,6 +39,8 @@ import struct
 import threading
 import time
 
+from . import kinematics
+
 
 # ---- ports ----------------------------------------------------------------
 PORT_DASHBOARD = 29999
@@ -254,6 +256,7 @@ class DobotMG400:
             "servo_error": None,
             "stalled": False,       # commanded to move but not moving
             "stall_error": 0.0,     # setpoint-vs-actual gap (mm) behind `stalled`
+            "limit_warning": None,  # follower held back at a joint/parallelogram limit
         }
 
     def get_state(self):
@@ -567,6 +570,50 @@ class DobotMG400:
             self._state["stalled"] = False
             self._state["stall_error"] = 0.0
 
+    def _limit_hit(self, reason):
+        with self._state_lock:
+            self._state["limit_warning"] = reason
+
+    def recover_from_limit(self, max_pulses=12, pulse=0.5, speed=2):
+        """Back the arm out of a joint/parallelogram limit alarm the way the
+        Dobot alarm table says ("reverse jog out of limit"): ClearError,
+        EnableRobot, then short slow MoveJog pulses on the joint that moves
+        away from the limit until the alarm is gone and the arm is clear of
+        the safety margin. Returns (ok, message). The follower must be
+        stopped; Enable restarts it."""
+        self.stop_servo()
+        self._dash("ClearError()", raise_on_error=False)
+        self._dash("EnableRobot()", raise_on_error=False)
+        deadline = time.monotonic() + ENABLE_TIMEOUT
+        while time.monotonic() < deadline and self.get_state()["robot_mode"] not in READY_MODES:
+            time.sleep(0.05)
+        self._dash(f"SpeedFactor({int(speed)})", raise_on_error=False)
+        moved = None
+        try:
+            for _ in range(max_pulses):
+                joints = self.get_state()["joints"]
+                axis = kinematics.jog_out(joints)
+                if axis is None and not self.get_error_id():
+                    break
+                if axis is None:
+                    return False, f"alarm {self.get_error_id()} is not a joint limit I can back out of"
+                moved = axis
+                self._move(f"MoveJog({axis})", raise_on_error=False)
+                time.sleep(pulse)
+                self._move("MoveJog()", raise_on_error=False)
+                time.sleep(0.3)
+                if self.get_error_id():
+                    self._dash("ClearError()", raise_on_error=False)
+                    self._dash("EnableRobot()", raise_on_error=False)
+                    time.sleep(0.5)
+        finally:
+            self._move("MoveJog()", raise_on_error=False)
+        if self.get_error_id() or kinematics.jog_out(self.get_state()["joints"]):
+            return False, "still at the limit after the jog pulses -- press E-stop and call the instructor"
+        with self._state_lock:
+            self._state["limit_warning"] = None
+        return True, f"backed out with {moved}" if moved else "no limit to back out of"
+
     def _set_servo_error(self, message):
         with self._state_lock:
             self._state["servo_error"] = message
@@ -599,10 +646,24 @@ class DobotMG400:
                 else:
                     no_servo_count = 0
                     with self._servo_lock:
+                        prev = list(self._setpoint)
                         setpoint, vel = slew(
                             self._setpoint, self._vel, self._target,
                             self._max_lin, self._max_lin_acc,
                             self._max_ang, self._max_ang_acc, SERVO_INTERVAL)
+                        # Joint-limit guard: never stream a step that walks
+                        # further into a joint/parallelogram limit margin; the
+                        # controller would alarm (34/73) and fault the arm.
+                        # Steps that back away from a limit always pass.
+                        new_depth, why = kinematics.severity(*setpoint[:3])
+                        if new_depth > 0:
+                            old_depth, _ = kinematics.severity(*prev[:3])
+                            if new_depth > old_depth + 1e-6 or new_depth >= kinematics.MARGIN:
+                                setpoint, vel = prev, [0.0, 0.0, 0.0, 0.0]
+                                self._target = list(prev)
+                                self._limit_hit(why)
+                        elif self._state.get("limit_warning"):
+                            self._limit_hit(None)
                         self._setpoint, self._vel = setpoint, vel
                     errid, resp = self.servo_p(*setpoint)
                     if errid != 0:
