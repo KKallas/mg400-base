@@ -587,6 +587,9 @@ class DobotMG400:
         deadline = time.monotonic() + ENABLE_TIMEOUT
         while time.monotonic() < deadline and self.get_state()["robot_mode"] not in READY_MODES:
             time.sleep(0.05)
+        # controller V1.6+: the motion queue stays paused after ClearError until
+        # Continue() (TCP/IP guide); older firmware answers "unknown command".
+        self._dash("Continue()", raise_on_error=False)
         self._dash(f"SpeedFactor({int(speed)})", raise_on_error=False)
         moved = None
         try:

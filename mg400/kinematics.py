@@ -22,7 +22,7 @@ import math
 # (joints from GetAngle vs pose from GetPose, 6 poses, rms 0.01 mm; nominal
 # MG400 links are 175 mm each).
 L1 = 174.2
-L2 = 175.1
+L2 = 175.07
 R0 = 109.49
 Z0 = -52.97
 
