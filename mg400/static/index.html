@@ -561,7 +561,11 @@ function wire() {
     if (Number.isNaN(z)) return;
     if (!confirm(`Set Z floor to ${z} mm? The arm will be allowed down to this height.`)) return;
     const res = await api("/api/z_floor", { z });
-    if (res.ok) { applyFloor(res.z_floor); log(`Z floor set to ${res.z_floor} mm`, "log-ok"); }
+    if (res.ok) {
+      applyFloor(res.z_floor);
+      if (res.z_floor !== z) log(`Z floor ${z} is outside the workspace — set to ${res.z_floor} mm`, "log-err");
+      else log(`Z floor set to ${res.z_floor} mm`, "log-ok");
+    }
     else log(`floor ✗ ${res.error}`, "log-err");
   };
   document.getElementById("btnSuck").onclick = async () =>
