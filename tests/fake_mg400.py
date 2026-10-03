@@ -44,6 +44,10 @@ class FakeMG400:
         self.never_enable = False
         self.feedback_paused = False  # stop sending feedback, keep the socket open
         self.ignore_servo = False     # accept ServoP but don't move (wedged controller)
+        # Real MG400 (lab, 03.10.26): a ServoP whose X/Y/Z equal the arm's
+        # pose does not turn R; the arm stays idle. MovJ does turn it.
+        self.servo_ignores_rotation_only = False
+        self.movj_points = []         # every MovJ pose received
         self.silent_dash = False      # the dashboard stops replying
         self.delay_next = {"dash": 0.0, "motion": 0.0}     # delay the next reply (s)
         self.extra_reply = {"dash": None, "motion": None}  # sent before the next reply
@@ -144,11 +148,16 @@ class FakeMG400:
             value = "{" + ",".join(f"{v:.3f}" for v in self.pose + [0.0, 0.0]) + "}"
         elif op == "GetErrorID":
             value = "{[[],[],[],[],[],[],[]]}"
-        elif op in ("ServoP", "MovL"):
+        elif op in ("ServoP", "MovL", "MovJ"):
             pose = [float(a) for a in args.split(",")]
             if op == "ServoP":
                 self.servo_points.append(pose)
-            if self.mode in (5, 7) and not self.ignore_servo:
+            if op == "MovJ":
+                self.movj_points.append(pose)
+            rotation_only = all(abs(pose[i] - self.pose[i]) < 1e-6 for i in range(3))
+            if op == "ServoP" and self.servo_ignores_rotation_only and rotation_only:
+                pass
+            elif self.mode in (5, 7) and not self.ignore_servo:
                 self.pose = pose
                 self.joints = self._joints_for(pose)
         delay, self.delay_next[name] = self.delay_next[name], 0.0

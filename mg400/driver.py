@@ -39,6 +39,8 @@ import struct
 import threading
 import time
 
+from . import kinematics
+
 
 # ---- ports ----------------------------------------------------------------
 PORT_DASHBOARD = 29999
@@ -81,6 +83,15 @@ NO_SERVO_TRIP = 3          # consecutive follower ticks in NO_SERVO_MODES → st
 STALL_GRACE_SECS = 1.5     # commanded-but-static this long → stalled
 STALL_MOVE_EPS = 0.2       # deg of joint travel that counts as "the arm moved"
 STALL_ERR = 6.0            # mm between streamed setpoint and actual TCP
+# The MG400 does not execute a ServoP that changes only R (lab, 03.10.26: R
+# target -27, X/Y/Z unchanged -> the arm stayed IDLE at -27.98 for 4 s; with a
+# 0.5 mm X change it ran and R stopped part-way when X arrived). When the
+# follower has arrived in X/Y/Z, the arm is idle and R is still off, R is
+# turned once with MovJ to the same point.
+R_SETTLE_DEG = 0.2         # R closer than this counts as arrived
+R_FIX_XYZ_MM = 0.5         # X/Y/Z must be this close before turning R alone
+R_FIX_IDLE_TICKS = 8       # follower ticks idle and off in R before MovJ
+R_FIX_TIMEOUT = 10.0       # s for the MovJ to turn R
 
 # Alarm groups from Dobot's MG400 alarm tables. Feedback reports every alarm as
 # mode 9 (ERROR); GetErrorID() tells an E-stop from a limit or a collision.
@@ -254,6 +265,7 @@ class DobotMG400:
             "servo_error": None,
             "stalled": False,       # commanded to move but not moving
             "stall_error": 0.0,     # setpoint-vs-actual gap (mm) behind `stalled`
+            "limit_warning": None,  # follower held back at a joint/parallelogram limit
         }
 
     def get_state(self):
@@ -517,6 +529,7 @@ class DobotMG400:
             if r is not None:
                 self._target[3] = float(r)
         self._last_motion_ts = time.time()   # a fresh move gets its stall grace
+        self._limit_hit(None)   # a new command clears the "held at a limit" note
 
     def hold(self):
         """Smooth stop: aim the target at the follower's natural braking point so
@@ -567,13 +580,80 @@ class DobotMG400:
             self._state["stalled"] = False
             self._state["stall_error"] = 0.0
 
+    def _limit_hit(self, reason):
+        with self._state_lock:
+            self._state["limit_warning"] = reason
+
+    def recover_from_limit(self, max_pulses=12, pulse=0.5, speed=2):
+        """Back the arm out of a joint/parallelogram limit alarm the way the
+        Dobot alarm table says ("reverse jog out of limit"): ClearError,
+        EnableRobot, then short slow MoveJog pulses on the joint that moves
+        away from the limit until the alarm is gone and the arm is clear of
+        the safety margin. Returns (ok, message). The follower must be
+        stopped; Enable restarts it."""
+        self.stop_servo()
+        self._dash("ClearError()", raise_on_error=False)
+        self._dash("EnableRobot()", raise_on_error=False)
+        deadline = time.monotonic() + ENABLE_TIMEOUT
+        while time.monotonic() < deadline and self.get_state()["robot_mode"] not in READY_MODES:
+            time.sleep(0.05)
+        # controller V1.6+: the motion queue stays paused after ClearError until
+        # Continue() (TCP/IP guide); older firmware answers "unknown command".
+        self._dash("Continue()", raise_on_error=False)
+        self._dash(f"SpeedFactor({int(speed)})", raise_on_error=False)
+        moved = None
+        try:
+            for _ in range(max_pulses):
+                joints = self.get_state()["joints"]
+                axis = kinematics.jog_out(joints)
+                if axis is None and not self.get_error_id():
+                    break
+                if axis is None:
+                    return False, f"alarm {self.get_error_id()} is not a joint limit I can back out of"
+                moved = axis
+                self._move(f"MoveJog({axis})", raise_on_error=False)
+                time.sleep(pulse)
+                self._move("MoveJog()", raise_on_error=False)
+                time.sleep(0.3)
+                if self.get_error_id():
+                    self._dash("ClearError()", raise_on_error=False)
+                    self._dash("EnableRobot()", raise_on_error=False)
+                    time.sleep(0.5)
+        finally:
+            self._move("MoveJog()", raise_on_error=False)
+        if self.get_error_id() or kinematics.jog_out(self.get_state()["joints"]):
+            return False, "still at the limit after the jog pulses -- press E-stop and call the instructor"
+        with self._state_lock:
+            self._state["limit_warning"] = None
+        return True, f"backed out with {moved}" if moved else "no limit to back out of"
+
     def _set_servo_error(self, message):
         with self._state_lock:
             self._state["servo_error"] = message
 
+    def _rotate_in_place(self, setpoint):
+        """Turn R alone with MovJ (ServoP ignores rotation-only steps, see
+        R_SETTLE_DEG). Blocks the follower until R arrives, the target
+        changes, the link drops or R_FIX_TIMEOUT passes."""
+        x, y, z, r = setpoint
+        errid, _ = self._move(f"MovJ({x:.3f},{y:.3f},{z:.3f},{r:.3f})", raise_on_error=False)
+        if errid != 0:
+            return
+        deadline = time.monotonic() + R_FIX_TIMEOUT
+        while self._servo_running and time.monotonic() < deadline:
+            st = self.get_state()
+            if not st["connected"] or abs(st["pose"][3] - r) <= R_SETTLE_DEG:
+                return
+            with self._servo_lock:
+                if list(self._target) != list(setpoint):
+                    return
+            time.sleep(SERVO_INTERVAL)
+
     def _servo_loop(self):
         consecutive_errors = 0
         no_servo_count = 0
+        r_off_ticks = 0
+        r_fix_tried = None        # setpoint already turned with MovJ (try once)
         next_t = time.monotonic()
         try:
             while self._servo_running:
@@ -599,11 +679,38 @@ class DobotMG400:
                 else:
                     no_servo_count = 0
                     with self._servo_lock:
+                        prev = list(self._setpoint)
                         setpoint, vel = slew(
                             self._setpoint, self._vel, self._target,
                             self._max_lin, self._max_lin_acc,
                             self._max_ang, self._max_ang_acc, SERVO_INTERVAL)
+                        # Joint-limit guard: never stream a step that walks
+                        # further into a joint/parallelogram limit margin; the
+                        # controller would alarm (34/73) and fault the arm.
+                        # Steps that back away from a limit always pass.
+                        new_depth, why = kinematics.severity(*setpoint[:3])
+                        if new_depth > 0:
+                            old_depth, _ = kinematics.severity(*prev[:3])
+                            if new_depth > old_depth + 1e-6 or new_depth >= kinematics.MARGIN:
+                                setpoint, vel = prev, [0.0, 0.0, 0.0, 0.0]
+                                self._target = list(prev)
+                                self._limit_hit(why)
                         self._setpoint, self._vel = setpoint, vel
+                        settled = setpoint == list(self._target) and not any(vel)
+                    pose = st["pose"]
+                    if (settled and st["feedback_ok"] and st["robot_mode"] == 5
+                            and max(abs(pose[i] - setpoint[i]) for i in range(3)) <= R_FIX_XYZ_MM
+                            and abs(pose[3] - setpoint[3]) > R_SETTLE_DEG
+                            and r_fix_tried != setpoint):
+                        r_off_ticks += 1
+                    else:
+                        r_off_ticks = 0
+                    if r_off_ticks >= R_FIX_IDLE_TICKS:
+                        r_off_ticks = 0
+                        r_fix_tried = list(setpoint)
+                        self._rotate_in_place(setpoint)
+                        next_t = time.monotonic()
+                        continue
                     errid, resp = self.servo_p(*setpoint)
                     if errid != 0:
                         consecutive_errors += 1

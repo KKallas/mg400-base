@@ -15,7 +15,7 @@ import math
 WORKSPACE = {
     "x": [-450.0, 450.0],
     "y": [-450.0, 450.0],
-    "z": [-150.0, 230.0],
+    "z": [-200.0, 230.0],   # reach by Z comes from the joint-limit guard (kinematics.py)
     "r": [-160.0, 160.0],
 }
 RADIUS_MIN = 150.0   # mm — inside this the arm can't reach (too folded)

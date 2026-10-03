@@ -142,6 +142,20 @@ class DriverTest(unittest.TestCase):
         for p in self.fake.servo_points:
             self.assertLess(_off_line(p, p0, p1), 0.01)
 
+    def test_rotation_only_target_is_reached(self):
+        # Real MG400: ServoP that changes only R is ignored; the follower must
+        # turn R another way, once, and then keep streaming.
+        self.fake.servo_ignores_rotation_only = True
+        self.follow()
+        x, y, z, r = self.fake.pose
+        self.robot.set_target_pose(x, y, z, r + 1.0)
+        self.assertTrue(wait_for(lambda: abs(self.fake.pose[3] - (r + 1.0)) < 0.01, timeout=3.0))
+        self.assertEqual(self.fake.pose[:3], [x, y, z])
+        time.sleep(0.5)
+        self.assertEqual(len(self.fake.movj_points), 1)
+        self.robot.set_target_pose(x + 20, y, z, r + 1.0)       # streaming resumes
+        self.assertTrue(wait_for(lambda: abs(self.fake.pose[0] - (x + 20)) < 0.01))
+
     def test_hold_brakes_along_the_line(self):
         self.follow()
         p0 = list(self.fake.pose[:3])
