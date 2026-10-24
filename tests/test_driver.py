@@ -12,7 +12,7 @@ import time
 import unittest
 
 from fake_mg400 import FakeMG400, wait_for
-from mg400.driver import DobotError, DobotMG400, slew
+from mg400.driver import DobotError, DobotMG400, slew, switch_to_api_mode
 
 
 def _norm(v):
@@ -195,6 +195,11 @@ class ApiModeTest(unittest.TestCase):
         self.robot.connect()
         self.assertTrue(self.fake.api_mode)
         self.assertEqual(len(self.fake.settings_posts), 2)
+
+    def test_switch_takes_only_a_plain_ip(self):
+        with self.assertRaises(ValueError):
+            switch_to_api_mode("example.com:80/x#", self.fake.settings_port)
+        self.assertEqual(self.fake.settings_posts, [])
 
     def test_failed_switch_is_reported(self):
         self.fake.api_mode = False
