@@ -4,6 +4,8 @@ real framing — "ErrorID,{values},Command(args);" replies and 1440-byte feedbac
 packets every 8 ms — and has switches for the faults seen on real robots.
 """
 
+import http.server
+import json
 import math
 import socket
 import struct
@@ -48,6 +50,34 @@ class FakeMG400:
         self.delay_next = {"dash": 0.0, "motion": 0.0}     # delay the next reply (s)
         self.extra_reply = {"dash": None, "motion": None}  # sent before the next reply
 
+        # API mode (TCP/IP secondary development). Off: the dashboard answers
+        # ErrorID -1 to everything. The settings server applies the mode the
+        # previous POST saved, then saves the new one, like the real controller.
+        self.api_mode = True
+        self.saved_remote_mode = "tcp"
+        self.settings_posts = []
+        fake = self
+
+        class Settings(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if self.path == "/settings/function/remoteControl":
+                    fake.settings_posts.append(body)
+                    fake.api_mode = fake.saved_remote_mode == "tcp"
+                    fake.saved_remote_mode = body["mode"]
+                reply = json.dumps({"status": True}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(reply)))
+                self.end_headers()
+                self.wfile.write(reply)
+
+            def log_message(self, *args):
+                pass
+
+        self._settings = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Settings)
+        self.settings_port = self._settings.server_address[1]
+        threading.Thread(target=self._settings.serve_forever, daemon=True).start()
+
         self._stop = False
         self._conns = []
         self._listeners = []
@@ -75,6 +105,8 @@ class FakeMG400:
 
     def close(self):
         self._stop = True
+        self._settings.shutdown()
+        self._settings.server_close()
         for s in self._listeners + self._conns:
             _close(s)
 
@@ -131,6 +163,9 @@ class FakeMG400:
     def _reply(self, c, name, cmd):
         op, _, args = cmd[:-1].partition("(")
         if name == "dash" and self.silent_dash:
+            return
+        if not self.api_mode:
+            c.sendall(f"-1,{{}},{cmd};".encode())
             return
         value = "{}"
         if op == "EnableRobot":

@@ -155,6 +155,41 @@ class DriverTest(unittest.TestCase):
         self.assertLess(_dist(p0, end), _dist(p0, p1) - 10)     # stopped short of it
 
 
+class ApiModeTest(unittest.TestCase):
+    def setUp(self):
+        self.fake = FakeMG400()
+        self.robot = DobotMG400("127.0.0.1", command_timeout=0.5, ports=self.fake.ports,
+                                settings_port=self.fake.settings_port)
+
+    def tearDown(self):
+        self.robot.close()
+        self.fake.close()
+
+    def test_connect_leaves_api_mode_alone_when_it_is_on(self):
+        self.robot.connect()
+        self.assertEqual(self.fake.settings_posts, [])
+
+    def test_connect_switches_api_mode_on_after_power_up(self):
+        self.fake.api_mode = False            # power-up: setting saved as tcp, not applied
+        self.robot.connect()
+        self.assertTrue(self.fake.api_mode)
+        self.assertEqual(self.robot.enable()[0], 0)
+
+    def test_switch_works_when_another_mode_was_saved(self):
+        self.fake.api_mode = False            # e.g. Studio Pro left "tp" saved
+        self.fake.saved_remote_mode = "tp"
+        self.robot.connect()
+        self.assertTrue(self.fake.api_mode)
+        self.assertEqual(len(self.fake.settings_posts), 2)
+
+    def test_failed_switch_is_reported(self):
+        self.fake.api_mode = False
+        self.robot.settings_port = self.fake.ports[1]   # not an HTTP server
+        with self.assertRaises(DobotError) as cm:
+            self.robot.connect()
+        self.assertIn("API mode is off", str(cm.exception))
+
+
 class SlewTest(unittest.TestCase):
     def test_speed_and_acceleration_caps_hold_through_a_new_target(self):
         sp, v = [0.0] * 4, [0.0] * 4

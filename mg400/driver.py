@@ -38,18 +38,21 @@ import socket
 import struct
 import threading
 import time
+import urllib.request
 
 
 # ---- ports ----------------------------------------------------------------
 PORT_DASHBOARD = 29999
 PORT_MOTION = 30003
 PORT_FEEDBACK = 30004
+PORT_SETTINGS = 22000      # controller HTTP settings server (what DobotLink talks to)
 
 # ---- timing ---------------------------------------------------------------
 FEEDBACK_TIMEOUT = 1.0     # s without a feedback packet → connection lost
 ENABLE_TIMEOUT = 5.0       # s for the arm to report enabled after EnableRobot
 CLOSE_STOP_TIMEOUT = 0.5   # s for the StopRobot sent while closing
 SERVO_INTERVAL = 0.04      # 25 Hz (ServoP minimum cycle is ~30 ms)
+API_SWITCH_SETTLE = 1.0    # s after switching API mode on before opening the ports
 
 # ---- feedback packet (offsets per Dobot's MyType struct) ------------------
 FEEDBACK_SIZE = 1440
@@ -135,6 +138,28 @@ def parse_feedback(packet):
     }
 
 
+def switch_to_api_mode(ip, port=PORT_SETTINGS, timeout=5.0):
+    """Turn on TCP/IP secondary development (API mode), as Dobot Studio Pro's
+    Remote Control setting does, without Studio Pro or DobotLink.
+
+    The controller loses API mode on power-up; then the dashboard answers
+    ErrorID -1 to every command. The switch is a POST of {"mode": "tcp"} to
+    /settings/function/remoteControl on the settings server. Each POST applies
+    the mode the previous one saved and then saves its own (lab, 24.10.26:
+    POST "tp" left API mode on, the next POST "tcp" turned it off, one more
+    POST "tcp" turned it on), so it is sent twice."""
+    body = json.dumps({"mode": "tcp", "name": ""}).encode()
+    url = f"http://{ip}:{port}/settings/function/remoteControl"
+    for _ in range(2):
+        req = urllib.request.Request(
+            url, data=body, method="POST", headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            reply = json.loads(r.read().decode("utf-8", errors="replace") or "{}")
+        if reply.get("status") is not True:
+            raise OSError(f"settings server refused the switch: {reply}")
+
+
 def _reply_name(resp):
     """The command a reply echoes ("0,{},EnableRobot();" → "EnableRobot"), or
     None if the reply does not have that shape."""
@@ -190,12 +215,14 @@ def slew(setpoint, vel, target, max_lin, lin_acc, max_ang, ang_acc, dt):
 
 
 class DobotMG400:
-    def __init__(self, ip, connect_timeout=5.0, command_timeout=5.0, ports=None):
+    def __init__(self, ip, connect_timeout=5.0, command_timeout=5.0, ports=None,
+                 settings_port=PORT_SETTINGS):
         self.ip = ip
         self.connect_timeout = connect_timeout
         self.command_timeout = command_timeout
         # (dashboard, motion, feedback); only a test robot on localhost changes it
         self.ports = tuple(ports) if ports else (PORT_DASHBOARD, PORT_MOTION, PORT_FEEDBACK)
+        self.settings_port = settings_port
 
         self._dashboard = None
         self._motion = None
@@ -283,7 +310,32 @@ class DobotMG400:
         s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         return s
 
+    def api_mode_on(self):
+        """True if the dashboard accepts commands, False if API mode is off
+        (port refused, or ErrorID -1 to RobotMode), None if the robot does not
+        answer at all (cable, IP). Uses its own short-lived socket."""
+        try:
+            s = self._open(self.ports[0], self.command_timeout)
+        except ConnectionRefusedError:
+            return False
+        except OSError:
+            return None
+        try:
+            s.sendall(b"RobotMode()")
+            resp, _ = self._recv_response(s)
+        except OSError:
+            return None
+        finally:
+            s.close()
+        return self._parse_errid(resp) == 0
+
     def connect(self):
+        if self.api_mode_on() is False:
+            try:
+                switch_to_api_mode(self.ip, self.settings_port, self.connect_timeout)
+            except (OSError, ValueError) as e:
+                raise DobotError(-1, f"API mode is off and switching it on failed: {e}", "connect")
+            time.sleep(API_SWITCH_SETTLE)
         dash_port, motion_port, feed_port = self.ports
         try:
             self._dashboard = self._open(dash_port, self.command_timeout)

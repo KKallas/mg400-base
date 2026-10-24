@@ -48,8 +48,10 @@ means cable, port, or address — nothing below works until this does.
 ## 2. API mode
 
 The controller serves its TCP ports only while **TCP/IP secondary development**
-("API mode") is switched on. It is a one-time setting per robot and the robot
-keeps it while powered; the lab robots normally already have it on. Check:
+("API mode") is switched on. The robot saves the setting and keeps it across
+power cycles (checked 24.10.26: after a power cycle the controller logged
+`script mode is tcp` and the dashboard answered at once). It is lost when
+another program changes the robot's mode, e.g. Dobot Studio Pro. Check:
 
 ```sh
 mg400 status
@@ -63,12 +65,16 @@ Ports the robot now serves:
 | 30003 | motion | MovL (point to point), ServoP (streamed setpoints) |
 | 30004 | feedback | 1440-byte status packet every ~8 ms: mode, joints, tool pose, DO bits |
 
-If `mg400 status` is refused while the ping works, API mode is off. Switching it
-on is done once with Dobot Studio Pro. On a Windows PC with a wired port:
-[docs/dobot-api-mode-windows.md](docs/dobot-api-mode-windows.md). On a Mac it runs in a UTM Windows VM —
-steps in [docs/dobot-api-mode.md](docs/dobot-api-mode.md). Nothing else in this
-package needs Studio Pro, and **only one program may send motion commands at a
-time**, so it is not running while the page is.
+You do not need Studio Pro to switch it back on: every connect (the page's
+**Connect**, `mg400 status`, any CLI command) first asks the dashboard
+`RobotMode()`. If the port is refused or the reply is ErrorID -1, the driver
+switches API mode on itself (two `POST {"mode": "tcp", "name": ""}` to
+`http://<robot>:22000/settings/function/remoteControl`, the controller's
+settings server that Studio Pro uses through DobotLink) and then connects. When
+API mode is already on it changes nothing. The manual procedure with Studio Pro
+is still in [docs/dobot-api-mode-windows.md](docs/dobot-api-mode-windows.md) and
+[docs/dobot-api-mode.md](docs/dobot-api-mode.md). **Only one program may send
+motion commands at a time**, so Studio Pro is not running while the page is.
 
 ## 3. Run the page
 
@@ -196,7 +202,7 @@ safe fix is fresh connections. Nothing restarts on its own; **Connect** and
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
 | no ping to 192.168.1.6 | address, mask, cable, or the wrong robot port | redo step 1; cable in LAN1 |
-| ping works, `mg400 status` refuses | API mode not enabled | docs/dobot-api-mode-windows.md or docs/dobot-api-mode.md |
+| ping works, `mg400 status` says *API mode is off and switching it on failed* | the settings server (port 22000) did not accept the switch | check the robot answers `http://192.168.1.6:22000/connection/state`; else docs/dobot-api-mode-windows.md |
 | connects but will not move | not enabled, or another program holds control | **Enable**; stop the other program |
 | *Connection lost* | cable or adapter, the computer went to sleep, or another program (Dobot Studio) talking to the robot | one program at a time; **Connect** again |
 | *arm still DISABLED 5 s after EnableRobot* | E-stop pressed, or the robot is in an alarm | release the E-stop, **Clear Error**, **Enable** |
