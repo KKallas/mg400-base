@@ -16,10 +16,11 @@ robot the page loads and every command answers `{"ok": false, "error": "Not conn
 
 Before changing anything:
 
-* The robot must be in API mode (TCP/IP secondary development). It is a
-  one-time switch per robot; the lab robots have it on. If not,
-  `docs/dobot-api-mode.md` is the one-time procedure from a Mac,
-  `docs/dobot-api-mode-windows.md` from a Windows PC with a wired port.
+* The robot must be in API mode (TCP/IP secondary development). The robot
+  saves it across power cycles; `connect()` switches it back on by itself
+  when the dashboard refuses or answers -1 (`switch_to_api_mode()`, POST to the
+  settings server on port 22000, sent twice: each POST applies the previously
+  saved mode). Manual procedure: `docs/dobot-api-mode*.md`.
 * Only one program may send motion commands at a time.
 * Dashboard and motion are strict request/reply. After a timeout or a reply
   that echoes a different command, the driver drops the whole link on purpose
