@@ -32,6 +32,7 @@ move is flagged `stalled`; and while the arm is in ERROR its alarm IDs are read
 and classified.
 """
 
+import ipaddress
 import json
 import math
 import socket
@@ -148,8 +149,10 @@ def switch_to_api_mode(ip, port=PORT_SETTINGS, timeout=5.0):
     the mode the previous one saved and then saves its own (lab, 24.10.26:
     POST "tp" left API mode on, the next POST "tcp" turned it off, one more
     POST "tcp" turned it on), so it is sent twice."""
+    addr = ipaddress.ip_address(ip)          # ValueError for anything but a plain IP
+    host = f"[{addr}]" if addr.version == 6 else str(addr)
     body = json.dumps({"mode": "tcp", "name": ""}).encode()
-    url = f"http://{ip}:{port}/settings/function/remoteControl"
+    url = f"http://{host}:{int(port)}/settings/function/remoteControl"
     for _ in range(2):
         req = urllib.request.Request(
             url, data=body, method="POST", headers={"Content-Type": "application/json"}
@@ -157,7 +160,7 @@ def switch_to_api_mode(ip, port=PORT_SETTINGS, timeout=5.0):
         with urllib.request.urlopen(req, timeout=timeout) as r:
             reply = json.loads(r.read().decode("utf-8", errors="replace") or "{}")
         if reply.get("status") is not True:
-            raise OSError(f"settings server refused the switch: {reply}")
+            raise OSError(f"settings server refused the switch: {str(reply)[:80]}")
 
 
 def _reply_name(resp):
