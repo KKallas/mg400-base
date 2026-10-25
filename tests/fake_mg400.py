@@ -50,6 +50,9 @@ class FakeMG400:
         # pose does not turn R; the arm stays idle. MovJ does turn it.
         self.servo_ignores_rotation_only = False
         self.movj_points = []         # every MovJ pose received
+        self.jogs = []                # every MoveJog axis received ("" = stop)
+        self.jog_speed = 30.0         # deg/s of a MoveJog(J4+/-)
+        self._jog_dir = 0
         self.silent_dash = False      # the dashboard stops replying
         self.delay_next = {"dash": 0.0, "motion": 0.0}     # delay the next reply (s)
         self.extra_reply = {"dash": None, "motion": None}  # sent before the next reply
@@ -123,6 +126,13 @@ class FakeMG400:
     def _set_mode(self, mode):
         self.mode = mode
 
+    def _jog(self):
+        """MoveJog(J4+/-) turns R (= J1 + J4) until MoveJog() stops it."""
+        while self._jog_dir and not self._stop:
+            time.sleep(0.01)
+            self.pose = self.pose[:3] + [self.pose[3] + self._jog_dir * self.jog_speed * 0.01]
+            self.joints = self._joints_for(self.pose)
+
     def _accept(self, ls, name):
         while not self._stop:
             try:
@@ -183,6 +193,11 @@ class FakeMG400:
             value = "{" + ",".join(f"{v:.3f}" for v in self.pose + [0.0, 0.0]) + "}"
         elif op == "GetErrorID":
             value = "{[[],[],[],[],[],[],[]]}"
+        elif op == "MoveJog":
+            self.jogs.append(args)
+            was, self._jog_dir = self._jog_dir, {"J4+": 1, "J4-": -1}.get(args, 0)
+            if self._jog_dir and not was and self.mode in (5, 7):
+                threading.Thread(target=self._jog, daemon=True).start()
         elif op in ("ServoP", "MovL", "MovJ"):
             pose = [float(a) for a in args.split(",")]
             if op == "ServoP":

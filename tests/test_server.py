@@ -1,6 +1,7 @@
 """Server tests: the page's JSON API driving the fake MG400, and the limits."""
 
 import math
+import time
 import unittest
 
 from fake_mg400 import FakeMG400, wait_for
@@ -47,6 +48,21 @@ class ServerTest(unittest.TestCase):
         res = self.post("/api/move", {"x": x0, "y": 0, "z": 0})
         self.assertFalse(res["ok"])
         self.assertIn("Connection lost", res["error"])
+
+
+    def test_held_jog_stops_at_the_z_floor(self):
+        self.assertTrue(self.post("/api/connect", {"ip": "127.0.0.1"})["ok"])
+        self.assertFalse(self.post("/api/jog_hold", {"axis": "z", "dir": -1})["ok"])   # not enabled
+        self.assertTrue(self.post("/api/enable")["ok"])
+        self.assertTrue(self.post("/api/speed", {"ratio": 100})["ok"])
+        self.assertFalse(self.post("/api/jog_hold", {"axis": "q", "dir": 1})["ok"])
+        self.assertFalse(self.post("/api/jog_hold", {"axis": "z", "dir": 5})["ok"])
+        for _ in range(30):
+            self.assertTrue(self.post("/api/jog_hold", {"axis": "z", "dir": -1})["ok"])
+            time.sleep(0.1)
+        self.assertTrue(self.post("/api/jog_hold", {"dir": 0})["ok"])
+        self.assertTrue(wait_for(lambda: abs(self.fake.pose[2] - server.Z_FLOOR) < 0.01))
+        self.assertGreaterEqual(min(p[2] for p in self.fake.servo_points), server.Z_FLOOR - 1e-6)
 
 
 class LimitsTest(unittest.TestCase):

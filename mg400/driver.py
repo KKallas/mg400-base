@@ -97,6 +97,20 @@ R_FIX_XYZ_MM = 0.5         # X/Y/Z must be this close before turning R alone
 R_FIX_IDLE_TICKS = 8       # follower ticks idle and off in R before MovJ
 R_FIX_TIMEOUT = 10.0       # s for the MovJ to turn R
 
+# Hold-to-move jog (jog_hold), like DobotStudio's held jog button. Stepping
+# the target 1 mm at a time makes the follower brake before every step (it
+# arrives at rest), so a held button moved in jerks. Instead the target rides
+# a braking distance plus JOG_LEAD_SECS of travel ahead of the setpoint: the
+# follower cruises at the speed cap and brakes only when the target stops (on
+# release, at the clamp or at a joint-limit margin). A held jog must be renewed
+# within JOG_TTL seconds, else it brakes (dead-man: a closed tab or lost
+# network cannot leave the arm running). R alone cannot be streamed (see
+# R_SETTLE_DEG), so a held R is the controller's own MoveJog(J4+/-).
+JOG_TTL = 0.35             # s a jog_hold call keeps the arm moving
+JOG_LEAD_SECS = 0.3        # s of travel the target rides ahead beyond braking
+JOG_MIN_LEAD = 0.5         # mm: closer to a limit margin than this → stop there
+JOG_STOP_TIMEOUT = 2.0     # s for MoveJog() to bring J4 to rest
+
 # Alarm groups from Dobot's MG400 alarm tables. Feedback reports every alarm as
 # mode 9 (ERROR); GetErrorID() tells an E-stop from a limit or a collision.
 EMERGENCY_ALARM_IDS = {85, 86, 12288, 12289, 20484, 21570}
@@ -264,6 +278,9 @@ class DobotMG400:
         self._max_ang = 60.0      # deg/s
         self._max_lin_acc = 400.0 # mm/s^2 (ramp ~0.2 s to 80 mm/s; lower = gentler)
         self._max_ang_acc = 300.0 # deg/s^2
+        # held jog: {"axis": 0-3, "sign": ±1, "deadline", "clamp", "movejog"}
+        self._jog = None
+        self._jog_next = None     # the jog that starts once the current one has ended
 
         # stall detection: when the joints last moved, and from where
         self._last_motion_ts = 0.0
@@ -591,18 +608,112 @@ class DobotMG400:
         it decelerates to rest instead of snapping (which would overshoot). The
         braking point lies on the current direction of travel."""
         with self._servo_lock:
-            if self._setpoint is None:
+            self._jog_next = None
+            if self._jog is not None:
+                self._jog["deadline"] = 0.0    # the follower ends it (MoveJog() for R)
+            self._brake()
+
+    def _brake(self):
+        """hold() without the lock: target = the braking point."""
+        if self._setpoint is None:
+            return
+        tgt = list(self._setpoint)
+        v = self._vel
+        speed = math.sqrt(v[0] ** 2 + v[1] ** 2 + v[2] ** 2)
+        if speed:
+            reach = speed / (2.0 * self._max_lin_acc)   # braking distance / speed
+            for i in range(3):
+                tgt[i] += v[i] * reach
+        if v[3]:
+            tgt[3] += (1.0 if v[3] > 0 else -1.0) * v[3] * v[3] / (2.0 * self._max_ang_acc)
+        self._target = tgt
+
+    def jog_hold(self, axis, sign, clamp=None, ttl=JOG_TTL):
+        """Hold-to-move jog on one axis ("x", "y", "z" or "r"; sign +1/-1, 0 =
+        release). Call it again within `ttl` seconds to keep moving; the arm
+        brakes smoothly on release or when the calls stop. `clamp(x, y, z, r)`
+        keeps the moving target inside the workspace and above the Z floor."""
+        i = "xyzr".index(axis)
+        with self._servo_lock:
+            jog = self._jog
+            if not sign:
+                self._jog_next = None
+                if jog is not None:
+                    jog["deadline"] = 0.0
+                    self._brake()
                 return
+            sign = 1 if sign > 0 else -1
+            if jog is not None and jog["axis"] == i and jog["sign"] == sign:
+                jog["deadline"] = time.monotonic() + ttl
+                return
+            if jog is not None:            # another axis or direction: brake first
+                jog["deadline"] = 0.0
+                self._brake()
+            self._jog_next = {"axis": i, "sign": sign, "clamp": clamp,
+                              "deadline": time.monotonic() + ttl, "movejog": None}
+            if jog is None:
+                self._jog, self._jog_next = self._jog_next, None
+        self._last_motion_ts = time.time()
+        self._limit_hit(None)
+
+    def _jog_tick(self):
+        """Follower tick for a held jog (under _servo_lock). Returns what the
+        loop does outside the lock: None (stream ServoP as usual), "start" /
+        "run" (the controller's MoveJog owns the arm: send it / keep quiet) or
+        "end" (stop the MoveJog and take the arm back)."""
+        jog = self._jog
+        if jog is None:
+            return None
+        if jog["movejog"]:                  # R through the controller's jog
+            return "run" if time.monotonic() <= jog["deadline"] else "end"
+        if time.monotonic() > jog["deadline"]:
+            self._jog, self._jog_next = self._jog_next, None
+            self._brake()
+            return None
+        if jog["axis"] == 3:
+            if any(self._vel):               # X/Y/Z still braking: R starts at rest
+                return None
+            jog["movejog"] = f"J4{'+' if jog['sign'] > 0 else '-'}"
+            return "start"
+        # the target rides ahead: braking distance + JOG_LEAD_SECS at the cap
+        v = self._max_lin
+        lead = v * v / (2.0 * self._max_lin_acc) + v * JOG_LEAD_SECS
+        here = kinematics.severity(*self._setpoint[:3])[0]
+        while True:
             tgt = list(self._setpoint)
-            v = self._vel
-            speed = math.sqrt(v[0] ** 2 + v[1] ** 2 + v[2] ** 2)
-            if speed:
-                reach = speed / (2.0 * self._max_lin_acc)   # braking distance / speed
-                for i in range(3):
-                    tgt[i] += v[i] * reach
-            if v[3]:
-                tgt[3] += (1.0 if v[3] > 0 else -1.0) * v[3] * v[3] / (2.0 * self._max_ang_acc)
-            self._target = tgt
+            tgt[jog["axis"]] += jog["sign"] * lead
+            if jog["clamp"]:
+                tgt = list(jog["clamp"](*tgt))
+            depth, why = kinematics.severity(*tgt[:3])
+            if depth <= max(0.0, here):
+                break
+            lead /= 2.0                       # stop short of the limit margin
+            if lead < JOG_MIN_LEAD:
+                self._brake()
+                tgt = self._target
+                self._limit_hit(why)
+                break
+        self._target = tgt
+        return None
+
+    def _end_movejog(self):
+        """Stop the controller's MoveJog, wait for J4 to come to rest and take
+        the arm back into the follower at that pose."""
+        self._move("MoveJog()", raise_on_error=False)
+        deadline = time.monotonic() + JOG_STOP_TIMEOUT
+        last = None
+        while time.monotonic() < deadline:
+            r = self.get_state()["pose"][3]
+            if last is not None and abs(r - last) < 0.01:
+                break
+            last = r
+            time.sleep(SERVO_INTERVAL)
+        pose = list(self.get_state()["pose"])
+        with self._servo_lock:
+            self._setpoint = list(pose)
+            self._target = list(pose)
+            self._vel = [0.0, 0.0, 0.0, 0.0]
+            self._jog, self._jog_next = self._jog_next, None
 
     def start_servo(self):
         self.stop_servo()
@@ -734,6 +845,20 @@ class DobotMG400:
                 else:
                     no_servo_count = 0
                     with self._servo_lock:
+                        jog_action = self._jog_tick()
+                        if jog_action == "start":
+                            axis = self._jog["movejog"]
+                    if jog_action == "start":
+                        self._move(f"MoveJog({axis})", raise_on_error=False)
+                    elif jog_action == "end":
+                        self._end_movejog()
+                    if jog_action in ("start", "run", "end"):
+                        r_off_ticks = 0
+                        self._last_motion_ts = time.time()
+                        next_t = time.monotonic()
+                        time.sleep(SERVO_INTERVAL)
+                        continue
+                    with self._servo_lock:
                         prev = list(self._setpoint)
                         setpoint, vel = slew(
                             self._setpoint, self._vel, self._target,
@@ -784,6 +909,12 @@ class DobotMG400:
             self._set_servo_error(e.resp)
         finally:
             self._servo_running = False
+            jog, self._jog, self._jog_next = self._jog, None, None
+            if jog is not None and jog["movejog"] and self.is_connected():
+                try:
+                    self._move("MoveJog()", raise_on_error=False)
+                except DobotError:
+                    pass
             with self._state_lock:
                 self._state["servo_active"] = False
 

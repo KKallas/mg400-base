@@ -446,6 +446,31 @@ def jog():
     return _ok(target={"x": round(x, 2), "y": round(y, 2), "z": round(z, 2), "r": round(r, 2)})
 
 
+@app.route("/api/jog_hold", methods=["POST"])
+def jog_hold():
+    """Hold-to-move jog: {"axis":"x","dir":1} starts or keeps moving at the
+    speed cap, {"dir":0} brakes. Send it every ~100 ms while the button is
+    held; without a call for driver.JOG_TTL s the arm brakes by itself.
+    X/Y/Z stay clamped like /api/move; R turns with the controller's MoveJog."""
+    robot = _current()
+    if robot is None or not robot.is_connected():
+        return _not_connected(robot)
+    data = request.json or {}
+    axis = data.get("axis", "x")
+    if axis not in ("x", "y", "z", "r"):
+        return _fail("axis must be x, y, z or r")
+    try:
+        sign = int(data.get("dir", 0))
+    except (TypeError, ValueError):
+        return _fail("dir must be -1, 0 or 1")
+    if sign not in (-1, 0, 1):
+        return _fail("dir must be -1, 0 or 1")
+    if not robot.get_state()["servo_active"] and sign:
+        return _fail("the follower is not running — press Enable")
+    robot.jog_hold(axis, sign, clamp=_clamp_pose)
+    return _ok()
+
+
 @app.route("/api/recover", methods=["POST"])
 def recover():
     """Back the arm out of a joint/parallelogram limit alarm (34/73/74...) with

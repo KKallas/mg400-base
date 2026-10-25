@@ -169,6 +169,68 @@ class DriverTest(unittest.TestCase):
         self.assertLess(_dist(p0, end), _dist(p0, p1) - 10)     # stopped short of it
 
 
+    # -- held jog ---------------------------------------------------------------
+    def hold_jog(self, axis, sign, secs, **kw):
+        end = time.monotonic() + secs
+        while time.monotonic() < end:
+            self.robot.jog_hold(axis, sign, **kw)
+            time.sleep(0.1)
+
+    def test_held_jog_cruises_without_stopping_between_calls(self):
+        self.follow()
+        self.robot.set_max_velocity(50, 30)
+        self.robot.set_max_accel(200, 100)
+        x0 = self.fake.pose[0]
+        self.fake.servo_points.clear()
+        self.hold_jog("x", 1, 1.0)
+        steps = [b[0] - a[0] for a, b in zip(self.fake.servo_points, self.fake.servo_points[1:])]
+        cruise = steps[len(steps) // 2:]        # past the 0.25 s ramp
+        self.assertGreater(min(cruise), 0.9 * 50 * 0.04)  # never brakes between calls
+        self.assertLess(max(steps), 50 * 0.04 + 1e-6)     # speed cap holds
+        self.robot.jog_hold("x", 0)
+        time.sleep(0.6)
+        moved = self.fake.pose[0] - x0
+        braking = 50 * 50 / (2 * 200)
+        self.assertLess(moved, 50 * 1.0 + braking + 1.0)
+        self.assertEqual(self.fake.pose[1:3], [0.0, 0.0])
+
+    def test_held_jog_brakes_when_the_calls_stop(self):
+        self.follow()
+        self.robot.set_max_velocity(50, 30)
+        self.robot.set_max_accel(200, 100)
+        self.hold_jog("y", -1, 0.5)
+        time.sleep(1.0)                          # tab closed: no more calls
+        y = self.fake.pose[1]
+        time.sleep(0.5)
+        self.assertEqual(self.fake.pose[1], y)
+
+    def test_held_jog_stays_inside_the_clamp(self):
+        self.follow()
+        self.robot.set_max_velocity(50, 30)
+        self.robot.set_max_accel(200, 100)
+        floor = self.fake.pose[2] - 10.0
+        clamp = lambda x, y, z, r: (x, y, max(z, floor), r)
+        self.hold_jog("z", -1, 1.0, clamp=clamp)
+        self.assertGreaterEqual(min(p[2] for p in self.fake.servo_points), floor - 1e-6)
+        self.assertAlmostEqual(self.fake.pose[2], floor, places=3)
+
+    def test_held_r_turns_with_movejog_and_follower_takes_over(self):
+        self.fake.servo_ignores_rotation_only = True
+        self.follow()
+        x, y, z, r = self.fake.pose
+        self.hold_jog("r", 1, 0.6)
+        self.assertEqual(self.fake.jogs[0], "J4+")
+        self.robot.jog_hold("r", 0)
+        self.assertTrue(wait_for(lambda: self.fake.jogs[-1] == ""))
+        time.sleep(0.3)
+        r1 = self.fake.pose[3]
+        self.assertGreater(r1, r + 5)
+        self.assertEqual(self.fake.pose[:3], [x, y, z])
+        self.robot.set_target_pose(x + 20, y, z)    # follower streams from the new R
+        self.assertTrue(wait_for(lambda: abs(self.fake.pose[0] - (x + 20)) < 0.01))
+        self.assertAlmostEqual(self.fake.pose[3], r1, places=2)
+
+
 class ApiModeTest(unittest.TestCase):
     def setUp(self):
         self.fake = FakeMG400()
